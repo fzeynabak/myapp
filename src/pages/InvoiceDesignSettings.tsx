@@ -217,6 +217,9 @@ export default function InvoiceDesignSettings() {
               سازنده و بهینه‌ساز فاکتور آریا (طرح المنتور)
             </h3>
             <p className="text-[10.5px] text-slate-400 dark:text-slate-500 mt-1">ساختار، ترتیب قرارگیری بخش‌ها، رنگ‌ها، مهر و امضا و خطوط حاشیه را سفارشی‌سازی کنید.</p>
+            <div className="bg-emerald-50/50 dark:bg-emerald-950/10 border border-emerald-100/50 dark:border-emerald-900/30 rounded-xl p-3 mt-3 text-[10px] text-emerald-800 dark:text-emerald-350 leading-relaxed font-normal">
+              <strong>تنظیمات چاپ:</strong> این بخش به شما امکان می‌دهد قالب چاپی فاکتورها را شخصی‌سازی کنید. هرگونه تغییر در رنگ، ضخامت خطوط یا عنوان‌ها بلافاصله در پیش‌نمایش سمت چپ قابل مشاهده است و در خروجی‌های چاپی و PDF اعمال خواهد شد.
+            </div>
           </div>
           <div className="flex gap-1.5 shrink-0">
             <button
@@ -347,6 +350,9 @@ export default function InvoiceDesignSettings() {
                               className="w-full text-xs px-2.5 py-1.5 border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 rounded-lg focus:outline-none focus:border-emerald-500 text-slate-800 dark:text-white"
                             />
                             <span className="text-[9.5px] text-slate-400">مثال: فاکتور فروش رسمی، پیش فاکتور، صورتحساب خدمات</span>
+                            <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed font-normal">
+                              <strong>عنوان چاپی:</strong> متنی که در بالای فاکتور به عنوان تیتر اصلی چاپ می‌شود (مانند فاکتور رسمی فروش یا پیش فاکتور)
+                            </p>
                           </div>
                           
                           <div className="grid grid-cols-2 gap-3 pt-1">
@@ -630,6 +636,9 @@ export default function InvoiceDesignSettings() {
                 />
                 <span className="font-mono text-[10px] text-slate-600 dark:text-slate-300 w-4 block text-center font-bold">{design.lineWidth}px</span>
               </div>
+              <p className="text-[10px] text-slate-450 dark:text-slate-550 leading-relaxed font-normal">
+                <strong>ضخامت خطوط:</strong> میزان ضخامت و تیرگی خطوط جداکننده و جدول‌های فاکتور چاپی
+              </p>
             </div>
 
             {/* پدینگ درونی حاشیه کاغذ */}

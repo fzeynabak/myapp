@@ -5,18 +5,7 @@ import { Database, Plus, RefreshCw } from 'lucide-react';
 
 const MySwal = withReactContent(Swal);
 
-// اضافه کردن Typeهای مربوط به Electron IPC برای TypeScript
-declare global {
-  interface Window {
-    electronAPI?: {
-      addItem: (name: string) => Promise<number>;
-      getItems: () => Promise<{id: number, name: string, created_at: string}[]>;
-      getDbStats?: () => Promise<any>;
-      windowControl?: (command: string) => void;
-      changeDbPath?: () => Promise<{ success: boolean; path?: string; error?: string }>;
-    }
-  }
-}
+// Typeهای مربوط به Electron IPC از طریق src/types.ts به صورت سراسری تعریف شده‌اند.
 
 export default function DbTest() {
   const [items, setItems] = useState<{id: number, name: string, created_at: string}[]>([]);

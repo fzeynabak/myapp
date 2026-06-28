@@ -63,9 +63,13 @@ export default function ProductNew() {
     internal_sku: editingProduct?.internal_sku || '',
     serial_number: editingProduct?.serial_number || '',
     image_base64: editingProduct?.image_base64 || '',
+    barcode: editingProduct?.barcode || '',
+    min_stock: editingProduct?.min_stock || 0,
     initial_warehouse_id: '',
     initial_qty: 0
   });
+
+  const [profitPercent, setProfitPercent] = useState<number>(0);
 
   // Modal displays
   const [showCategoryPopup, setShowCategoryPopup] = useState(false);
@@ -74,6 +78,38 @@ export default function ProductNew() {
   // Quick temporary selects
   const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
   const [selectedBrand, setSelectedBrand] = useState<Brand | null>(null);
+
+  // Dynamic calculation of profit percentage based on cost and price
+  useEffect(() => {
+    if (formData.cost > 0) {
+      try {
+        const costDec = new Decimal(formData.cost);
+        const priceDec = new Decimal(formData.price);
+        const diff = priceDec.minus(costDec);
+        const pct = diff.div(costDec).times(100).toNumber();
+        setProfitPercent(parseFloat(pct.toFixed(2)));
+      } catch (err) {
+        setProfitPercent(0);
+      }
+    } else {
+      setProfitPercent(0);
+    }
+  }, [formData.cost, formData.price]);
+
+  // When profit percent is modified by user, calculate and set price
+  const handleProfitPercentChange = (pctValue: number) => {
+    setProfitPercent(pctValue);
+    if (formData.cost > 0) {
+      try {
+        const costDec = new Decimal(formData.cost);
+        const pctDec = new Decimal(pctValue).div(100).plus(1);
+        const computedPrice = costDec.times(pctDec).toFixed(0);
+        setFormData(prev => ({ ...prev, price: parseInt(computedPrice) }));
+      } catch (err) {
+        // Safe fallback
+      }
+    }
+  };
 
   useEffect(() => {
     fetchMetadata();
@@ -189,13 +225,23 @@ export default function ProductNew() {
   const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!formData.name) {
-      MySwal.fire('خطا', `نام ${activeTab === 'service' ? 'خدمت' : 'کالا'} اجباری است`, 'warning');
+    if (!formData.name || !formData.name.trim()) {
+      MySwal.fire('نقص اطلاعات', `نام ${activeTab === 'service' ? 'خدمت' : 'کالا'} نمی‌تواند خالی باشد.`, 'warning');
       return;
     }
 
-    if (!formData.code) {
-      MySwal.fire('خطا', `کد ${activeTab === 'service' ? 'خدمت' : 'کالا'} اجباری است`, 'warning');
+    if (!formData.code || !formData.code.trim()) {
+      MySwal.fire('نقص اطلاعات', `وارد کردن کد شناسه ${activeTab === 'service' ? 'خدمت' : 'کالا'} الزامی است.`, 'warning');
+      return;
+    }
+
+    if (Number(formData.price) < 0) {
+      MySwal.fire('مبلغ نامعتبر', `قیمت فروش ${activeTab === 'service' ? 'خدمت' : 'کالا'} نمی‌تواند یک عدد منفی باشد.`, 'warning');
+      return;
+    }
+
+    if (activeTab === 'product' && Number(formData.cost) < 0) {
+      MySwal.fire('مبلغ نامعتبر', 'مبلغ دفتری خرید (قیمت خرید) کالا نمی‌تواند منفی باشد.', 'warning');
       return;
     }
 
@@ -287,31 +333,36 @@ export default function ProductNew() {
 
       {/* Tabs segment for selection */}
       {!editingProduct && (
-        <div className="bg-slate-100 p-1 rounded-xl max-w-md ml-auto flex gap-1">
-          <button
-            type="button"
-            onClick={() => setActiveTab('product')}
-            className={`flex-1 py-2.5 rounded-lg text-xs font-black transition-all flex items-center justify-center gap-2 ${
-              activeTab === 'product'
-                ? 'bg-white shadow-sm text-slate-900'
-                : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Package className="w-4 h-4 text-indigo-500" />
-            <span>محصول فیزیکی (کالا)</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('service')}
-            className={`flex-1 py-2.5 rounded-lg text-xs font-black transition-all flex items-center justify-center gap-2 ${
-              activeTab === 'service'
-                ? 'bg-indigo-600 text-white shadow-sm'
-                : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Briefcase className="w-4 h-4" />
-            <span>خدمات عمومی و VIP (سرویس)</span>
-          </button>
+        <div className="max-w-md ml-auto space-y-2">
+          <div className="bg-slate-100 p-1 rounded-xl flex gap-1">
+            <button
+              type="button"
+              onClick={() => setActiveTab('product')}
+              className={`flex-1 py-2.5 rounded-lg text-xs font-black transition-all flex items-center justify-center gap-2 ${
+                activeTab === 'product'
+                  ? 'bg-white shadow-sm text-slate-900'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Package className="w-4 h-4 text-indigo-500" />
+              <span>محصول فیزیکی (کالا)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('service')}
+              className={`flex-1 py-2.5 rounded-lg text-xs font-black transition-all flex items-center justify-center gap-2 ${
+                activeTab === 'service'
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Briefcase className="w-4 h-4" />
+              <span>خدمات عمومی و VIP (سرویس)</span>
+            </button>
+          </div>
+          <p className="text-[10px] text-slate-450 dark:text-slate-500 text-right pr-1 leading-relaxed">
+            <strong>کالا یا خدمت:</strong> کالا دارای موجودی فیزیکی و انبارداری است، اما خدمت جنبه غیرفیزیکی دارد (مانند دستمزد یا مشاوره)
+          </p>
         </div>
       )}
 
@@ -430,7 +481,7 @@ export default function ProductNew() {
               <span>مشخصات و شناسه‌گذاری {activeTab === 'service' ? 'خدمات / سرویس' : 'کالای انبار'}</span>
             </h3>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
               <div>
                 <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 mb-1.5">
                   {activeTab === 'service' ? 'نام کامل سرویس / خدمت' : 'نام کامل کالا / محصول'}
@@ -443,6 +494,9 @@ export default function ProductNew() {
                   placeholder={activeTab === 'service' ? 'مثال: ثبت نام اینترنتی دانشگاه سراسری' : 'مثال: گوشی آیفون پلاس ۱۳'}
                   className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                 />
+                <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                  <strong>نام کامل:</strong> عنوان دقیق تجاری {activeTab === 'service' ? 'خدمت' : 'کالا'} که در فاکتورها، گزارش‌های فروش و کاتالوگ عمومی چاپ می‌شود.
+                </p>
               </div>
 
               {/* Code */}
@@ -465,6 +519,27 @@ export default function ProductNew() {
                   placeholder="کد یکتا در سیستم"
                   className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-white font-mono text-left font-bold text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                 />
+                <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                  <strong>کد یکتا:</strong> شناسه منحصر‌به‌فرد سیستمی جهت جستجوی سریع و لینک فاکتورها به صورت غیر تکراری.
+                </p>
+              </div>
+
+              {/* Barcode */}
+              <div>
+                <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 mb-1.5 flex items-center gap-1">
+                  <Barcode className="w-3.5 h-3.5 text-indigo-500" />
+                  <span>بارکد کالا / خدمت</span>
+                </label>
+                <input
+                  type="text"
+                  value={formData.barcode}
+                  onChange={(e) => setFormData({ ...formData, barcode: e.target.value })}
+                  placeholder="اسکن یا تایپ بارکد..."
+                  className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-white font-mono text-left font-bold text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+                <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                  <strong>بارکد:</strong> شماره بارکد بین‌المللی کالا یا خدمت جهت ثبت سریع و خودکار در فاکتور توسط دستگاه بارکدخوان.
+                </p>
               </div>
             </div>
 
@@ -490,6 +565,9 @@ export default function ProductNew() {
                     placeholder="برای مثال SKU-6435-9011"
                     className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-white font-mono text-left text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                   />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>کد مرجع:</strong> کد شناسایی کالا (کد قطعه، شناسه تولیدکننده یا SKU) برای ردیابی دقیق
+                  </p>
                 </div>
 
                 <div>
@@ -511,6 +589,9 @@ export default function ProductNew() {
                     placeholder="برای مثال SN-562985"
                     className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-white font-mono text-left text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                   />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>شماره سریال:</strong> شماره سریال منحصر‌به‌فرد تولیدکننده جهت گارانتی، ردیابی قطعات و خدمات پس از فروش سخت‌افزاری.
+                  </p>
                 </div>
               </div>
             )}
@@ -534,6 +615,9 @@ export default function ProductNew() {
                     <span>انتخاب...</span>
                   </button>
                 </div>
+                <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                  <strong>دسته‌بندی مربوطه:</strong> گروه درختی کالا یا خدمت جهت فیلترینگ کاتالوگ فروش و استخراج گزارش مالی تفکیکی سود هر گروه.
+                </p>
               </div>
 
               {activeTab === 'product' && (
@@ -552,19 +636,22 @@ export default function ProductNew() {
                       <span>انتخاب...</span>
                     </button>
                   </div>
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>برند محصول:</strong> علامت تجاری سازنده کالا جهت دسته‌بندی کیفیت و اصالت کالا در انبار و صدور فاکتور مشتریان.
+                  </p>
                 </div>
               )}
             </div>
 
             {/* Pricing Details */}
-            <div className={`grid grid-cols-1 ${activeTab === 'service' ? 'sm:grid-cols-2' : 'sm:grid-cols-3'} gap-5`}>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
               {activeTab === 'product' && (
                 <div>
                   <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 mb-1.5">
                     مبلغ دفتری خرید (قیمت خرید)
                   </label>
                   <div className="relative">
-                    <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400 text-[10px] pointer-events-none">ریال</span>
+                    <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400 text-[10px] pointer-events-none font-semibold">ریال</span>
                     <input
                       type="number"
                       value={formData.cost === 0 ? '' : formData.cost}
@@ -574,6 +661,33 @@ export default function ProductNew() {
                     />
                   </div>
                   <span className="text-[9px] text-slate-400 block mt-1">معادل: {formatCurrency(formData.cost)} ریال</span>
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>قیمت خرید:</strong> بهای تمام‌شده خرید کالا از تامین‌کننده (مبنای محاسبه سود)
+                  </p>
+                </div>
+              )}
+
+              {activeTab === 'product' && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 mb-1.5">
+                    درصد سود فروش (حاشیه سود روی خرید)
+                  </label>
+                  <div className="relative">
+                    <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400 text-[11px] pointer-events-none font-bold">%</span>
+                    <input
+                      type="number"
+                      step="any"
+                      value={profitPercent === 0 ? '' : profitPercent}
+                      onChange={(e) => handleProfitPercentChange(parseFloat(e.target.value || '0'))}
+                      placeholder="درصد سود"
+                      className="w-full pl-8 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-white font-mono text-left font-bold text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    />
+                  </div>
+                  <span className="text-[9px] text-slate-450 block mt-1">
+                    {formData.cost > 0 
+                      ? `سود ناخالص هر کالا: ${formatCurrency(formData.price - formData.cost)} ریال`
+                      : 'ابتدا قیمت خرید را وارد کنید'}
+                  </span>
                 </div>
               )}
 
@@ -582,17 +696,42 @@ export default function ProductNew() {
                   {activeTab === 'service' ? 'مبلغ مصوب ارایه خدمت (کارمزد)' : 'مبلغ فروش مصوب (تک‌فروشی)'}
                 </label>
                 <div className="relative">
-                  <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400 text-[10px] pointer-events-none">ریال</span>
+                  <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400 text-[10px] pointer-events-none font-semibold">ریال</span>
                   <input
                     type="number"
                     value={formData.price === 0 ? '' : formData.price}
                     onChange={(e) => setFormData({ ...formData, price: Math.max(0, parseInt(e.target.value || '0')) })}
                     placeholder="مبلغ فروش"
-                    className="w-full pl-8 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-805 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-white font-mono text-left font-bold text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    className="w-full pl-8 pr-3 py-2.5 rounded-xl border border-slate-201 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-white font-mono text-left font-bold text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                   />
                 </div>
                 <span className="text-[9px] text-slate-400 block mt-1">معادل: {formatCurrency(formData.price)} ریال</span>
+                <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                  <strong>قیمت فروش:</strong> مبلغی که کالا یا خدمت را به مشتری می‌فروشید
+                </p>
               </div>
+
+              {activeTab === 'product' && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 mb-1.5">
+                    حد هشدار حداقل موجودی کالا
+                  </label>
+                  <div className="relative">
+                    <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-400 text-[10px] pointer-events-none">{formData.unit}</span>
+                    <input
+                      type="number"
+                      value={formData.min_stock === 0 ? '' : formData.min_stock}
+                      onChange={(e) => setFormData({ ...formData, min_stock: Math.max(0, parseFloat(e.target.value || '0')) })}
+                      placeholder="حداقل کالا در انبار جهت هشدار"
+                      className="w-full pl-12 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-white font-mono text-left font-bold text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    />
+                  </div>
+                  <span className="text-[9px] text-orange-500 block mt-1 font-semibold">هشدار سیستم هنگام رسیدن موجودی به این حد</span>
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>حداقل موجودی:</strong> حداقل تعداد کالا در انبار که کمتر از آن باعث هشدار کسری می‌شود
+                  </p>
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 mb-1.5">واحد شمارش / سنجش</label>

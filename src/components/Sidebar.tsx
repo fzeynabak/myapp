@@ -11,7 +11,8 @@ import {
   ShieldCheck,
   ChevronDown,
   ChevronUp,
-  Database
+  Database,
+  Coins
 } from 'lucide-react';
 
 const menuItems = [
@@ -55,6 +56,11 @@ const menuItems = [
     ]
   },
   {
+    title: 'صندوق و بانک',
+    icon: Coins,
+    path: '/treasury',
+  },
+  {
     title: 'انبارداری',
     icon: Boxes,
     path: '/inventory',
@@ -73,6 +79,7 @@ const menuItems = [
     icon: Settings,
     path: '/settings',
     subItems: [
+      { title: 'آموزش و راهنمای برنامه', path: '/settings/training' },
       { title: 'تنظیمات برنامه', path: '/settings/general' },
       { title: 'تنظیمات چاپ', path: '/settings/print' },
       { title: 'طراحی فاکتور', path: '/settings/invoice-design' },

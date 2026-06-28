@@ -165,8 +165,8 @@ export default function Sellers() {
     }
   };
 
-  // Filter persons who are already registered in the sellers table
-  const availablePersons = persons.filter(p => !sellers.some(s => s.person_id === p.id));
+  // Filter persons who are already registered in the sellers table and have category === 'فروشنده'
+  const availablePersons = persons.filter(p => p.category === 'فروشنده' && !sellers.some(s => s.person_id === p.id));
 
   return (
     <div className="h-full flex flex-col space-y-6 pb-20 overflow-y-auto custom-scrollbar pr-1" dir="rtl">

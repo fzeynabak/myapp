@@ -32,6 +32,7 @@ import UsersPage from './pages/Users';
 import SettingsStoreInfo from './pages/SettingsStoreInfo';
 import Employees from './pages/Employees';
 import ProductCategories from './pages/ProductCategories';
+import DebtorsCreditors from './pages/DebtorsCreditors';
 import ProductNew from './pages/ProductNew';
 import ProductList from './pages/ProductList';
 import WarehouseManagement from './pages/WarehouseManagement';
@@ -40,11 +41,26 @@ import SalesQuick from './pages/SalesQuick';
 import SalesInvoice from './pages/SalesInvoice';
 import SalesHistory from './pages/SalesHistory';
 import InvoiceDesignSettings from './pages/InvoiceDesignSettings';
+import Training from './pages/Training';
 
 const MySwal = withReactContent(Swal);
 
 // Unrestricted/Shared routes
 const GUEST_ALLOWED_PAGES = ['dashboard'];
+
+const LocalPlaceholderPage = () => {
+  return (
+    <div className="flex flex-col items-center justify-center h-full w-full bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-slate-100 dark:border-slate-800 p-8 text-center animate-in fade-in duration-550">
+      <div className="w-16 h-16 bg-slate-50 dark:bg-slate-800 text-slate-400 rounded-full flex justify-center items-center mb-6">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><path d="m9 15 2 2 4-4"/></svg>
+      </div>
+      <h2 className="text-2xl font-bold text-slate-800 dark:text-slate-150 mb-2">در حال ساخت...</h2>
+      <p className="text-slate-500 max-w-md">
+        این صفحه در مراحل بعدی توسعه پیاده‌سازی خواهد شد.
+      </p>
+    </div>
+  );
+};
 
 export default function App() {
   const [onboardingRequired, setOnboardingRequired] = useState<boolean | null>(null);
@@ -672,7 +688,11 @@ export default function App() {
                 <Employees />
               </RestrictionGuard>
             } />
-            <Route path="debtors-creditors" element={<PlaceholderPage />} />
+            <Route path="debtors-creditors" element={
+              <RestrictionGuard pageKey="persons">
+                <DebtorsCreditors />
+              </RestrictionGuard>
+            } />
           </Route>
 
           {/* Products */}
@@ -727,10 +747,17 @@ export default function App() {
             } />
             <Route path="history" element={
               <RestrictionGuard pageKey="inventory">
-                <PlaceholderPage />
+                <LocalPlaceholderPage />
               </RestrictionGuard>
             } />
           </Route>
+
+          {/* Treasury - Cash and Bank */}
+          <Route path="treasury" element={
+            <RestrictionGuard pageKey="dashboard">
+              <PlaceholderPage />
+            </RestrictionGuard>
+          } />
 
           {/* Users credentials / access management */}
           <Route path="users" element={
@@ -741,12 +768,13 @@ export default function App() {
 
           {/* Settings */}
           <Route path="settings">
+            <Route path="training" element={<Training />} />
             <Route path="general" element={
               <RestrictionGuard pageKey="settings">
                 <SettingsGeneral />
               </RestrictionGuard>
             } />
-            <Route path="print" element={<PlaceholderPage />} />
+            <Route path="print" element={<LocalPlaceholderPage />} />
             <Route path="invoice-design" element={
               <RestrictionGuard pageKey="settings">
                 <InvoiceDesignSettings />
@@ -757,7 +785,7 @@ export default function App() {
                 <SettingsStoreInfo />
               </RestrictionGuard>
             } />
-            <Route path="logs" element={<PlaceholderPage />} />
+            <Route path="logs" element={<LocalPlaceholderPage />} />
           </Route>
           
           {/* Dev options */}
@@ -766,7 +794,7 @@ export default function App() {
           </Route>
 
           {/* Fallback */}
-          <Route path="*" element={<PlaceholderPage />} />
+          <Route path="*" element={<LocalPlaceholderPage />} />
         </Route>
       </Routes>
     </Router>

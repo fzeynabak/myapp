@@ -36,10 +36,35 @@ import { CustomDesignedInvoice } from '../components/CustomDesignedInvoice';
 
 const MySwal = withReactContent(Swal);
 
+export const getPersonDisplayName = (c: Person | null | undefined): string => {
+  if (!c) return '';
+  const isLegal = c.type === 'حقوقی';
+  const nameParts: string[] = [];
+  
+  if (isLegal) {
+    if (c.title) nameParts.push(c.title);
+    const personalName = `${c.first_name || ''} ${c.last_name || ''}`.trim();
+    if (personalName) nameParts.push(`(نماینده: ${personalName})`);
+  } else {
+    const personalName = `${c.first_name || ''} ${c.last_name || ''}`.trim();
+    if (personalName) nameParts.push(personalName);
+    if (c.title) nameParts.push(`(${c.title})`);
+  }
+  
+  if (c.nickname) {
+    nameParts.push(`[${c.nickname}]`);
+  }
+  
+  const finalName = nameParts.join(' ').trim();
+  return finalName || c.accounting_code || 'بدون نام';
+};
+
 interface InvoiceItemState {
   product: Product;
   quantity: number;
   price: number;
+  discount: number;
+  taxRate: number;
 }
 
 export default function SalesInvoice() {
@@ -47,6 +72,7 @@ export default function SalesInvoice() {
   const [customers, setCustomers] = useState<Person[]>([]);
   const [invoiceNumber, setInvoiceNumber] = useState('');
   const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
+  const [editingInvoiceId, setEditingInvoiceId] = useState<number | null>(null);
   
   // Shopping Cart items
   const [items, setItems] = useState<InvoiceItemState[]>([]);
@@ -54,9 +80,17 @@ export default function SalesInvoice() {
   const [taxRate, setTaxRate] = useState<number>(0); // Default 0% value added tax (VAT), user can fill manually
   const [description, setDescription] = useState('');
 
+  // Received amount state for cashier
+  const [receivedAmount, setReceivedAmount] = useState<number>(0);
+
   // Catalog toggle and search states
   const [catalogView, setCatalogView] = useState<'card' | 'list'>('card');
   const [catalogSearch, setCatalogSearch] = useState('');
+  const [catalogPage, setCatalogPage] = useState(1);
+
+  // Searchable customer dropdown states
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [isCustomerDropdownOpen, setIsCustomerDropdownOpen] = useState(false);
 
   // Dynamic installment schedule state
   const [installments, setInstallments] = useState<{ amount: number; dueDate: string }[]>([]);
@@ -93,6 +127,8 @@ export default function SalesInvoice() {
     subtotal: number;
     tax: number;
     finalTotal: number;
+    receivedAmount: number;
+    previousBalance: number;
   } | null>(null);
 
   // Custom Customization states for Invoicing
@@ -171,6 +207,84 @@ export default function SalesInvoice() {
     generateNextInvoiceNumber();
   }, []);
 
+  // Load editing invoice from localStorage if present
+  useEffect(() => {
+    const editIdStr = localStorage.getItem('editing_invoice_id');
+    const editDataStr = localStorage.getItem('editing_invoice_data');
+    if (editIdStr && editDataStr && products.length > 0) {
+      try {
+        const id = parseInt(editIdStr);
+        const data = JSON.parse(editDataStr);
+        setEditingInvoiceId(id);
+        
+        setInvoiceNumber(data.invoice_number || '');
+        setDiscount(data.discount || 0);
+        setTaxRate(data.tax_rate || 0);
+        setDescription(data.description || '');
+        setPaymentMethod(data.payment_method || 'کارتخوان');
+        setSelectedCustomerId(data.customer_id || null);
+        setReceivedAmount(data.received_amount || 0);
+        
+        if (data.items && data.items.length > 0) {
+          const mappedItems = data.items.map((item: any) => {
+            const matchedProduct = products.find(p => p.id === item.product_id);
+            return {
+              product: matchedProduct || {
+                id: item.product_id,
+                name: item.product_name || 'کالای نامشخص',
+                code: item.product_code || '',
+                price: item.unit_price,
+                cost: item.cost || 0,
+                unit: item.product_unit || 'عدد',
+                type: 'product'
+              },
+              quantity: item.quantity,
+              price: item.unit_price,
+              discount: item.discount || 0,
+              taxRate: item.tax_rate || 0
+            };
+          });
+          setItems(mappedItems);
+        }
+
+        localStorage.removeItem('editing_invoice_id');
+        localStorage.removeItem('editing_invoice_data');
+
+        MySwal.fire({
+          icon: 'info',
+          title: 'حالت ویرایش فاکتور',
+          text: `شما در حال ویرایش فاکتور شماره ${data.invoice_number} هستید.`,
+          timer: 3000,
+          showConfirmButton: false,
+          toast: true,
+          position: 'top-end'
+        });
+      } catch (err) {
+        console.error('Error parsing editing invoice:', err);
+      }
+    }
+  }, [products]);
+
+  // Sync customerSearch input text with selectedCustomerId
+  useEffect(() => {
+    if (selectedCustomerId && customers.length > 0) {
+      const selected = customers.find(c => c.id === selectedCustomerId);
+      if (selected) {
+        setCustomerSearch(getPersonDisplayName(selected));
+      }
+    } else {
+      // Avoid clearing if user is searching
+      if (!isCustomerDropdownOpen) {
+        setCustomerSearch('');
+      }
+    }
+  }, [selectedCustomerId, customers]);
+
+  // Reset catalog page to 1 on search change
+  useEffect(() => {
+    setCatalogPage(1);
+  }, [catalogSearch]);
+
   // Auto-generate installments when parameters change
   useEffect(() => {
     if (paymentMethod === 'اقساطی') {
@@ -218,10 +332,43 @@ export default function SalesInvoice() {
         const prodList = await window.electronAPI.getProducts();
         setProducts(prodList);
       }
-      if (window.electronAPI?.getPersons) {
+      if (window.electronAPI?.getDebtorsCreditorsSummary) {
+        const persons = await window.electronAPI.getDebtorsCreditorsSummary();
+        // Categorized as مشتری (Category='مشتری' or roles lists)
+        const clients = persons.filter(p => p.category === 'مشتری');
+        
+        const preSelected = localStorage.getItem('preselected_customer_id');
+        if (preSelected) {
+          const id = parseInt(preSelected);
+          const found = persons.find(p => p.id === id);
+          if (found) {
+            if (!clients.some(c => c.id === id)) {
+              clients.push(found);
+            }
+            setSelectedCustomerId(id);
+          }
+          localStorage.removeItem('preselected_customer_id');
+        }
+        
+        setCustomers(clients);
+      } else if (window.electronAPI?.getPersons) {
         const persons = await window.electronAPI.getPersons();
         // Categorized as مشتری (Category='مشتری' or roles lists)
         const clients = persons.filter(p => p.category === 'مشتری');
+        
+        const preSelected = localStorage.getItem('preselected_customer_id');
+        if (preSelected) {
+          const id = parseInt(preSelected);
+          const found = persons.find(p => p.id === id);
+          if (found) {
+            if (!clients.some(c => c.id === id)) {
+              clients.push(found);
+            }
+            setSelectedCustomerId(id);
+          }
+          localStorage.removeItem('preselected_customer_id');
+        }
+        
         setCustomers(clients);
       }
 
@@ -370,7 +517,7 @@ export default function SalesInvoice() {
       }
       setItems(items.map(it => it.product.id === product.id ? { ...it, quantity: it.quantity + 1 } : it));
     } else {
-      setItems([...items, { product, quantity: 1, price: product.price }]);
+      setItems([...items, { product, quantity: 1, price: product.price, discount: 0, taxRate: taxRate }]);
     }
   };
 
@@ -408,9 +555,22 @@ export default function SalesInvoice() {
     setItems(items.map(it => it.product.id === productId ? { ...it, price: val } : it));
   };
 
+  const handleUpdateItemDiscount = (productId: number, val: number) => {
+    setItems(items.map(it => it.product.id === productId ? { ...it, discount: val } : it));
+  };
+
+  const handleUpdateItemTaxRate = (productId: number, val: number) => {
+    setItems(items.map(it => it.product.id === productId ? { ...it, taxRate: val } : it));
+  };
+
   const handleRemoveItem = (productId: number) => {
     setItems(items.filter(it => it.product.id !== productId));
   };
+
+  // Sync global taxRate to item line-item tax rates
+  useEffect(() => {
+    setItems(prev => prev.map(it => ({ ...it, taxRate })));
+  }, [taxRate]);
 
   // Secure decimal.js calculations
   const calculateSubtotal = () => {
@@ -420,36 +580,83 @@ export default function SalesInvoice() {
     }, new Decimal(0));
   };
 
+  const calculateItemsDiscount = () => {
+    return items.reduce((sum, item) => {
+      return sum.plus(new Decimal(item.discount || 0));
+    }, new Decimal(0));
+  };
+
+  const calculateItemsTax = () => {
+    return items.reduce((sum, item) => {
+      const lineSub = new Decimal(item.price).mul(item.quantity);
+      const lineDisc = new Decimal(item.discount || 0);
+      const taxable = lineSub.minus(lineDisc);
+      if (taxable.lte(0)) return sum;
+      const lineTax = taxable.mul(new Decimal(item.taxRate || 0).div(100));
+      return sum.plus(lineTax);
+    }, new Decimal(0));
+  };
+
   const calculateTax = () => {
-    const sub = calculateSubtotal();
-    const disc = new Decimal(discount || 0);
-    const taxable = sub.minus(disc);
-    if (taxable.lte(0)) return new Decimal(0);
-    return taxable.mul(new Decimal(taxRate).div(100));
+    return calculateItemsTax();
   };
 
   const calculateFinalTotal = () => {
     const sub = calculateSubtotal();
-    const disc = new Decimal(discount || 0);
-    const tax = calculateTax();
-    const total = sub.minus(disc).plus(tax);
+    const itemDisc = calculateItemsDiscount();
+    const globDisc = new Decimal(discount || 0);
+    const totalDisc = itemDisc.plus(globDisc);
+    const tax = calculateItemsTax();
+    const total = sub.minus(totalDisc).plus(tax);
     return total.lt(0) ? new Decimal(0) : total;
   };
+
+  // Dynamic automatic calculation of receivedAmount
+  useEffect(() => {
+    const finalAmt = calculateFinalTotal().toNumber();
+    if (paymentMethod === 'نسیه') {
+      setReceivedAmount(0);
+    } else if (paymentMethod === 'اقساطی') {
+      setReceivedAmount(paymentDetails.downPayment || 0);
+    } else {
+      setReceivedAmount(finalAmt);
+    }
+  }, [items, discount, taxRate, paymentMethod, paymentDetails.downPayment]);
 
   // Submit invoice to SQLite
   const handleSubmitInvoice = async () => {
     if (!selectedCustomerId) {
-      MySwal.fire('خطای انتخاب مشتری', 'لطفاً ابتدا مشتری حقیقی یا حقوقی فاکتور را انتخاب کنید.', 'error');
+      MySwal.fire('نقص اطلاعات', 'لطفاً ابتدا خریدار (مشتری) فاکتور را مشخص کنید.', 'error');
       return;
     }
     if (items.length === 0) {
-      MySwal.fire('سبد خرید خالی است', 'لطفاً اقلام کالا یا خدمات را به فاکتور بیافزایید.', 'error');
+      MySwal.fire('سبد خرید خالی است', 'جهت ثبت فاکتور، حداقل یک کالا یا خدمت باید در لیست وجود داشته باشد.', 'error');
       return;
     }
 
     const sub = calculateSubtotal().toNumber();
-    const final = calculateFinalTotal().toNumber();
+    const itemDisc = calculateItemsDiscount().toNumber();
+    const globDisc = discount;
+    const totalDisc = itemDisc + globDisc;
     const tax = calculateTax().toNumber();
+    const final = calculateFinalTotal().toNumber();
+
+    if (final <= 0 || isNaN(final)) {
+      MySwal.fire('مبلغ نامعتبر', 'مبلغ نهایی فاکتور معتبر نیست. جمع کل فاکتور باید بزرگتر از صفر باشد.', 'error');
+      return;
+    }
+
+    const selectedCustomer = customers.find(c => c.id === selectedCustomerId) || null;
+    const previousBalance = selectedCustomer ? (selectedCustomer.financial_balance || 0) : 0;
+
+    const getNewBalanceVal = () => {
+      const prev = new Decimal(previousBalance);
+      const payable = calculateFinalTotal();
+      const received = new Decimal(receivedAmount || 0);
+      return prev.plus(payable).minus(received).toNumber();
+    };
+
+    const status = (paymentMethod === 'نسیه' || paymentMethod === 'اقساطی') ? 'پرداخت نشده' : 'پرداخت شده';
 
     MySwal.fire({
       title: 'آیا فاکتور نهایی صادر شود؟',
@@ -463,28 +670,49 @@ export default function SalesInvoice() {
     }).then(async (result) => {
       if (result.isConfirmed) {
         try {
+          if (editingInvoiceId && window.electronAPI?.deleteInvoice) {
+            const savedUserStr = sessionStorage.getItem('current_user');
+            const savedUser = savedUserStr ? JSON.parse(savedUserStr) : null;
+            const currentUsername = savedUser?.username || 'مدیر سیستم';
+            await window.electronAPI.deleteInvoice({ id: editingInvoiceId, username: currentUsername });
+          }
           // Compile invoice transaction variables
+          const savedUserStr = sessionStorage.getItem('current_user');
+          const savedUser = savedUserStr ? JSON.parse(savedUserStr) : null;
+          const currentUsername = savedUser?.username || 'مدیر سیستم';
+
           const payload = {
             invoice_number: invoiceNumber,
             customer_id: selectedCustomerId,
             total_amount: sub,
-            discount: discount,
+            discount: totalDisc,
             tax: tax,
             final_amount: final,
-            status: paymentMethod === 'اقساطی' ? 'سررسید شده' : 'پرداخت شده',
+            status: status,
             payment_method: paymentMethod,
+            received_amount: receivedAmount,
+            username: currentUsername,
             payment_details: JSON.stringify({
               ...paymentDetails,
               tax_rate_percent: taxRate,
               created_timestamp: new Date().toISOString(),
-              installmentsList: paymentMethod === 'اقساطی' ? installments : undefined
+              installmentsList: paymentMethod === 'اقساطی' ? installments : undefined,
+              received_amount: receivedAmount,
+              previous_balance: previousBalance,
+              new_balance: getNewBalanceVal()
             }),
             description: description || `ثبت فاکتور رسمی فروش - روش تسویه و پرداخت: ${paymentMethod}`,
             items: items.map(it => ({
               product_id: it.product.id,
               quantity: it.quantity,
               unit_price: it.price,
-              total: new Decimal(it.price).mul(it.quantity).toNumber()
+              discount: it.discount || 0,
+              tax_rate: it.taxRate || 0,
+              total: new Decimal(it.price).mul(it.quantity)
+                .minus(new Decimal(it.discount || 0))
+                .plus(
+                  new Decimal(it.price).mul(it.quantity).minus(new Decimal(it.discount || 0)).mul(new Decimal(it.taxRate || 0).div(100))
+                ).toNumber()
             }))
           };
 
@@ -495,19 +723,21 @@ export default function SalesInvoice() {
               setLastSavedInvoice({
                 invoiceNumber: invoiceNumber,
                 paymentMethod: paymentMethod,
-                selectedCustomer: selectedCustomer || null,
+                selectedCustomer: selectedCustomer,
                 items: [...items],
-                discount: discount,
+                discount: totalDisc,
                 description: description || `ثبت فاکتور رسمی فروش - روش تسویه و پرداخت: ${paymentMethod}`,
                 installments: [...installments],
                 subtotal: sub,
                 tax: tax,
-                finalTotal: final
+                finalTotal: final,
+                receivedAmount: receivedAmount,
+                previousBalance: previousBalance
               });
 
               MySwal.fire({
                 title: 'فاکتور با موفقیت غایی شد',
-                text: `سند فاکتور شماره ${res.invoice_number} با موفقیت در سیستم حسابداری ملینا تعبیه گردید.`,
+                text: `سند فاکتور شماره ${res.invoice_number} با موفقیت در سیستم حسابداری ملینا تعبیه گردید. ${res.profit ? `\n(سود برآوردی فاکتور: ${toPersianDigits(res.profit.toLocaleString())} ریال)` : ''}`,
                 icon: 'success',
                 confirmButtonText: 'مشاهده سند چاپی فاکتور'
               }).then(() => {
@@ -520,8 +750,9 @@ export default function SalesInvoice() {
               setDiscount(0);
               setDescription('');
               setSelectedCustomerId(null);
+              setEditingInvoiceId(null);
               generateNextInvoiceNumber();
-              loadData(); // reload updated stock levels
+              loadData(); // reload updated stock levels and balances
             } else {
               throw new Error(res.error || 'خطا در ثبت');
             }
@@ -533,6 +764,8 @@ export default function SalesInvoice() {
     });
   };
 
+  const selectedCustomer = customers.find(c => c.id === selectedCustomerId);
+
   const printItems = lastSavedInvoice ? lastSavedInvoice.items : items;
   const printCustomer = lastSavedInvoice ? lastSavedInvoice.selectedCustomer : (customers.find(c => c.id === selectedCustomerId) || null);
   const printInvoiceNumber = lastSavedInvoice ? lastSavedInvoice.invoiceNumber : invoiceNumber;
@@ -540,12 +773,12 @@ export default function SalesInvoice() {
   const printDiscount = lastSavedInvoice ? lastSavedInvoice.discount : discount;
   const printDescription = lastSavedInvoice ? lastSavedInvoice.description : description;
   const printInstallments = lastSavedInvoice ? lastSavedInvoice.installments : installments;
+  const printReceivedAmount = lastSavedInvoice ? lastSavedInvoice.receivedAmount : receivedAmount;
+  const printPreviousBalance = lastSavedInvoice ? lastSavedInvoice.previousBalance : (selectedCustomer ? (selectedCustomer.financial_balance || 0) : 0);
 
   const printCalculateSubtotal = () => lastSavedInvoice ? new Decimal(lastSavedInvoice.subtotal) : calculateSubtotal();
   const printCalculateTax = () => lastSavedInvoice ? new Decimal(lastSavedInvoice.tax) : calculateTax();
   const printCalculateFinalTotal = () => lastSavedInvoice ? new Decimal(lastSavedInvoice.finalTotal) : calculateFinalTotal();
-
-  const selectedCustomer = customers.find(c => c.id === selectedCustomerId);
 
   // Trigger browser-level safe iframe printing
   const triggerPrintCmd = () => {
@@ -556,11 +789,46 @@ export default function SalesInvoice() {
     return formatPersianCurrency(val);
   };
 
+  const filteredCustomers = customers.filter(c => {
+    const q = customerSearch.toLowerCase().trim();
+    if (!q) return true;
+    const first_name = (c.first_name || '').toLowerCase();
+    const last_name = (c.last_name || '').toLowerCase();
+    const fullName = `${first_name} ${last_name}`.toLowerCase();
+    const title = (c.title || '').toLowerCase();
+    const nickname = (c.nickname || '').toLowerCase();
+    const phone1 = (c.phone1 || '').toLowerCase();
+    const phone2 = (c.phone2 || '').toLowerCase();
+    const phone3 = (c.phone3 || '').toLowerCase();
+    const nationalId = (c.national_id || '').toLowerCase();
+    const regNum = (c.registration_number || '').toLowerCase();
+    const econCode = (c.economic_code || '').toLowerCase();
+    const accCode = (c.accounting_code || '').toLowerCase();
+    
+    return fullName.includes(q) || 
+           title.includes(q) || 
+           nickname.includes(q) || 
+           phone1.includes(q) || 
+           phone2.includes(q) || 
+           phone3.includes(q) || 
+           nationalId.includes(q) || 
+           regNum.includes(q) || 
+           econCode.includes(q) || 
+           accCode.includes(q);
+  });
+
   const filteredProducts = products.filter(p => {
     const term = catalogSearch.toLowerCase().trim();
     if (!term) return true;
     return (p.name || '').toLowerCase().includes(term) || (p.code || '').toLowerCase().includes(term);
   });
+
+  const itemsPerPage = 10;
+  const totalCatalogPages = Math.ceil(filteredProducts.length / itemsPerPage);
+  const paginatedProducts = filteredProducts.slice(
+    (catalogPage - 1) * itemsPerPage,
+    catalogPage * itemsPerPage
+  );
 
   return (
     <div id="new_sales_invoice_page" className="p-4 lg:p-6 bg-slate-50 dark:bg-slate-950 font-sans min-h-screen text-slate-800 dark:text-slate-100 space-y-6">
@@ -589,10 +857,10 @@ export default function SalesInvoice() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
         {/* Right Column: Customer & Item Selection */}
-        <div className="xl:col-span-2 space-y-6">
+        <div className="lg:col-span-2 space-y-6">
           
           {/* Customer Selection block with quick add */}
           <div className="bg-white dark:bg-slate-900 rounded-2xl p-5 border border-slate-200/40 dark:border-slate-800/40 shadow-sm space-y-4">
@@ -612,29 +880,108 @@ export default function SalesInvoice() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
+              <div className="relative">
                 <label className="block text-[10px] font-bold text-slate-400 mb-1.5">انتخاب خریدار از لیست مشتریان:</label>
-                <select
-                  value={selectedCustomerId || ''}
-                  onChange={(e) => setSelectedCustomerId(e.target.value ? parseInt(e.target.value) : null)}
-                  className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none"
-                >
-                  <option value="">-- خریدار را انتخاب نمایید --</option>
-                  {customers.map(c => (
-                    <option key={c.id} value={c.id}>
-                      {c.first_name || ''} {c.last_name || ''} ({c.nickname || 'سایر'}) - {toPersianDigits(c.phone1) || 'ندارد'}
-                    </option>
-                  ))}
-                </select>
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="جستجوی نام، تلفن، کدملی، لقب..."
+                    value={customerSearch}
+                    onChange={(e) => {
+                      setCustomerSearch(e.target.value);
+                      setIsCustomerDropdownOpen(true);
+                    }}
+                    onFocus={() => setIsCustomerDropdownOpen(true)}
+                    className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-xs font-semibold text-slate-800 dark:text-white focus:outline-none focus:border-emerald-500 transition-all pr-10"
+                  />
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  
+                  {selectedCustomerId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedCustomerId(null);
+                        setCustomerSearch('');
+                      }}
+                      className="absolute left-3 top-1/2 -translate-y-1/2 text-[10px] font-bold text-rose-500 hover:text-rose-600 dark:text-rose-400 dark:hover:text-rose-350 transition-colors"
+                    >
+                      حذف خریدار
+                    </button>
+                  )}
+                </div>
+
+                {isCustomerDropdownOpen && (
+                  <>
+                    <div 
+                      className="fixed inset-0 z-10" 
+                      onClick={() => setIsCustomerDropdownOpen(false)} 
+                    />
+                    <div className="absolute z-20 w-full mt-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl max-h-56 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800 scrollbar-thin">
+                      {filteredCustomers.length === 0 ? (
+                        <div className="p-3 text-center text-xs text-slate-400">
+                          مشتری یافت نشد.
+                        </div>
+                      ) : (
+                        filteredCustomers.map(c => (
+                          <button
+                            key={c.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedCustomerId(c.id);
+                              setCustomerSearch(getPersonDisplayName(c));
+                              setIsCustomerDropdownOpen(false);
+                            }}
+                            className={`w-full text-right px-3 py-2 text-[11px] transition-colors flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-950 ${
+                              selectedCustomerId === c.id ? 'bg-emerald-50/50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 font-bold' : 'text-slate-700 dark:text-slate-200'
+                            }`}
+                          >
+                            <div className="truncate flex-1">
+                              <span className="block font-extrabold text-slate-800 dark:text-slate-100">
+                                {getPersonDisplayName(c)}
+                              </span>
+                              <span className="block text-[9px] text-slate-400 font-normal mt-0.5">
+                                تلفن: {toPersianDigits(c.phone1) || 'ثبت نشده'} | کد‌ملی/ثبت: {toPersianDigits(c.national_id || c.registration_number) || 'ثبت نشده'}
+                              </span>
+                            </div>
+                            <div className="text-left shrink-0 pl-1">
+                              <span className={`block text-[10px] font-bold ${
+                                (c.financial_balance || 0) > 0 ? 'text-amber-600 dark:text-amber-400' : 
+                                (c.financial_balance || 0) < 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'
+                              }`}>
+                                {(c.financial_balance || 0) > 0 ? `مانده: ${toPersianDigits((c.financial_balance || 0).toLocaleString())} ریال بدهکار` :
+                                 (c.financial_balance || 0) < 0 ? `مانده: ${toPersianDigits(Math.abs(c.financial_balance || 0).toLocaleString())} ریال بستانکار` : 'تسویه'}
+                              </span>
+                            </div>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
 
-              {selectedCustomer && (
-                <div className="p-3 bg-emerald-50/20 border border-emerald-100 dark:bg-emerald-950/5 dark:border-emerald-900/40 rounded-xl space-y-1.5 text-[11px] leading-relaxed">
-                  <p className="font-bold text-emerald-800 dark:text-emerald-400 flex items-center gap-1">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>کد ملی / شناسه ملی خریدار: {toPersianDigits(selectedCustomer.national_id) || 'ثبت نشده'}</span>
-                  </p>
+              {selectedCustomer ? (
+                <div className="p-3 bg-emerald-50/20 border border-emerald-100 dark:bg-emerald-950/5 dark:border-emerald-900/40 rounded-xl space-y-1.5 text-[11px] leading-relaxed flex flex-col justify-center">
+                  <div className="font-bold text-emerald-800 dark:text-emerald-400 flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-emerald-100/50 dark:border-emerald-900/30 pb-1.5">
+                    <span className="flex items-center gap-1">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>کد ملی / شناسه خریدار: {toPersianDigits(selectedCustomer.national_id) || 'ثبت نشده'}</span>
+                    </span>
+                    <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold shrink-0 ${
+                      (selectedCustomer.financial_balance || 0) > 0 ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-400' :
+                      (selectedCustomer.financial_balance || 0) < 0 ? 'bg-teal-100 text-teal-800 dark:bg-teal-950/40 dark:text-teal-400' :
+                      'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                    }`}>
+                      {(selectedCustomer.financial_balance || 0) > 0 ? `وضعیت حساب: ${toPersianDigits((selectedCustomer.financial_balance || 0).toLocaleString())} ریال (بدهکار)` :
+                       (selectedCustomer.financial_balance || 0) < 0 ? `وضعیت حساب: ${toPersianDigits(Math.abs(selectedCustomer.financial_balance || 0).toLocaleString())} ریال (بستانکار)` :
+                       'وضعیت حساب: تسویه شده'}
+                    </span>
+                  </div>
                   <p className="text-slate-500 dark:text-slate-400">شماره تلفن تماس: {toPersianDigits(selectedCustomer.phone1) || 'ثبت نشده'} — آدرس پستی: {selectedCustomer.address || 'ثبت نشده'}</p>
+                </div>
+              ) : (
+                <div className="p-3 bg-slate-50 dark:bg-slate-950/40 border border-slate-150 dark:border-slate-850/60 rounded-xl flex items-center justify-center text-[11px] text-slate-400">
+                  لطفاً خریدار را از کادر روبه‌رو انتخاب کنید یا یک خریدار جدید ثبت نمایید.
                 </div>
               )}
             </div>
@@ -650,6 +997,28 @@ export default function SalesInvoice() {
 
               {/* View toggle and search tools */}
               <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="text"
+                  placeholder="اسکن بارکد / ثبت سریع..."
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const input = e.currentTarget;
+                      const code = input.value.trim();
+                      if (code) {
+                        const found = products.find(p => p.code?.toLowerCase() === code.toLowerCase() || p.name?.toLowerCase().includes(code.toLowerCase()));
+                        if (found) {
+                          handleAddItem(found);
+                          input.value = '';
+                        } else {
+                          MySwal.fire('یافت نشد', `کالا یا خدمتی با کد یا بارکد "${code}" یافت نشد.`, 'error');
+                        }
+                      }
+                    }
+                  }}
+                  className="px-3 py-1.5 border border-emerald-300 dark:border-emerald-800 rounded-xl text-xs bg-emerald-50/20 dark:bg-emerald-950/10 focus:outline-none focus:border-emerald-500 w-44 font-bold text-right placeholder-slate-400"
+                />
+
                 <input
                   type="text"
                   placeholder="جستجو کالا یا خدمت..."
@@ -691,7 +1060,7 @@ export default function SalesInvoice() {
               ) : catalogView === 'card' ? (
                 /* Smaller, ultra-compact cards layout */
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                  {filteredProducts.map(p => {
+                  {paginatedProducts.map(p => {
                     const isSvc = p.type === 'service';
                     const isOutOfStock = !isSvc && p.total_stock <= 0;
                     return (
@@ -743,7 +1112,7 @@ export default function SalesInvoice() {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredProducts.map(p => {
+                      {paginatedProducts.map(p => {
                         const isSvc = p.type === 'service';
                         const isOutOfStock = !isSvc && p.total_stock <= 0;
                         return (
@@ -796,6 +1165,31 @@ export default function SalesInvoice() {
                 </div>
               )}
             </div>
+
+            {/* Catalog pagination controls */}
+            {totalCatalogPages > 1 && (
+              <div className="flex items-center justify-between border-t border-slate-100 dark:border-slate-800/60 pt-3 mt-1.5 text-xs">
+                <button
+                  type="button"
+                  disabled={catalogPage === 1}
+                  onClick={() => setCatalogPage(prev => Math.max(prev - 1, 1))}
+                  className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 disabled:opacity-40 font-bold transition-all"
+                >
+                  قبلی
+                </button>
+                <span className="font-bold text-slate-500 text-[11px]">
+                  صفحه {toPersianDigits(catalogPage)} از {toPersianDigits(totalCatalogPages)} — (شامل {toPersianDigits(filteredProducts.length)} کالا / خدمت)
+                </span>
+                <button
+                  type="button"
+                  disabled={catalogPage === totalCatalogPages}
+                  onClick={() => setCatalogPage(prev => Math.min(prev + 1, totalCatalogPages))}
+                  className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 disabled:opacity-40 font-bold transition-all"
+                >
+                  بعدی
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Form items shopping cart list */}
@@ -809,70 +1203,111 @@ export default function SalesInvoice() {
                 <thead>
                   <tr className="bg-slate-50 dark:bg-slate-950 text-slate-400 border-b border-slate-150 py-2">
                     <th className="p-3">ردیف</th>
-                    <th className="p-3">کد کالا</th>
+                    <th className="p-3">کد / بارکد</th>
                     <th className="p-3">شرح خدمت یا کالا</th>
-                    <th className="p-3 text-center">نوع</th>
-                    <th className="p-3 text-center w-24">تعداد / مقدار</th>
-                    <th className="p-3 text-left w-36">مبلغ واحد (ریال)</th>
-                    <th className="p-3 text-left w-40">جمع کل (ریال)</th>
+                    <th className="p-3 text-center">واحد</th>
+                    <th className="p-3 text-center w-20">تعداد</th>
+                    <th className="p-3 text-left w-32">قیمت واحد</th>
+                    <th className="p-3 text-left w-24">تخفیف</th>
+                    <th className="p-3 text-center w-16">مالیات</th>
+                    <th className="p-3 text-left w-36">مبلغ نهایی (ریال)</th>
                     <th className="p-3 text-center">حذف</th>
                   </tr>
                 </thead>
                 <tbody>
                   {items.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="text-center py-12 text-slate-400">هیچ کالا یا خدمتی به فاکتور افزوده نشده است.</td>
+                      <td colSpan={10} className="text-center py-12 text-slate-400">هیچ کالا یا خدمتی به فاکتور افزوده نشده است.</td>
                     </tr>
                   ) : (
-                    items.map((it, idx) => (
-                      <tr key={it.product.id} className="border-b border-slate-100 hover:bg-slate-50/50 dark:border-slate-800/40">
-                        <td className="p-3 font-semibold">{idx + 1}</td>
-                        <td className="p-3 font-mono">#{it.product.code}</td>
-                        <td className="p-3 font-bold">{it.product.name}</td>
-                        <td className="p-3 text-center">
-                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
-                            it.product.type === 'service' ? 'bg-purple-100/70 text-purple-800' : 'bg-slate-100 text-slate-800'
-                          }`}>
-                            {it.product.type === 'service' ? 'خدمت' : 'کالا'}
-                          </span>
-                        </td>
-                        <td className="p-3">
-                          <input
-                            type="number"
-                            min={1}
-                            value={it.quantity}
-                            onChange={(e) => handleUpdateQty(it.product.id, Math.max(1, parseInt(e.target.value || '1')))}
-                            dir="ltr"
-                            onClick={moveCursorToEnd}
-                            onFocus={moveCursorToEnd}
-                            className="w-16 px-1.5 py-1 text-center font-bold font-mono border rounded-lg bg-slate-50 dark:bg-slate-950 focus:outline-none"
-                          />
-                        </td>
-                        <td className="p-3">
-                          <input
-                            type="number"
-                            value={it.price}
-                            onChange={(e) => handleUpdatePrice(it.product.id, Math.max(0, parseInt(e.target.value || '0')))}
-                            dir="ltr"
-                            onClick={moveCursorToEnd}
-                            onFocus={moveCursorToEnd}
-                            className="w-32 px-1.5 py-1 text-right font-bold font-mono border rounded-lg bg-slate-50 dark:bg-slate-950 focus:outline-none no-spinners"
-                          />
-                        </td>
-                        <td className="p-3 text-left font-bold font-mono">
-                          {formatCurrency(new Decimal(it.price).mul(it.quantity))}
-                        </td>
-                        <td className="p-3 text-center">
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveItem(it.product.id)}
-                            className="text-red-400 hover:text-red-500 hover:scale-105 transition-all"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))
+                    items.map((it, idx) => {
+                      const lineSub = new Decimal(it.price).mul(it.quantity);
+                      const lineDisc = new Decimal(it.discount || 0);
+                      const lineTax = lineSub.minus(lineDisc).gt(0) 
+                        ? lineSub.minus(lineDisc).mul(new Decimal(it.taxRate || 0).div(100)) 
+                        : new Decimal(0);
+                      const lineTotal = lineSub.minus(lineDisc).plus(lineTax);
+
+                      return (
+                        <tr key={it.product.id} className="border-b border-slate-100 hover:bg-slate-50/50 dark:border-slate-800/40">
+                          <td className="p-3 font-semibold">{idx + 1}</td>
+                          <td className="p-3">
+                            <span className="block font-mono text-[10px]">#{it.product.code}</span>
+                            {it.product.barcode && <span className="block text-[8px] text-slate-400 font-mono">{it.product.barcode}</span>}
+                          </td>
+                          <td className="p-3 font-bold">
+                            <div>{it.product.name}</div>
+                            {it.product.type === 'product' && (
+                              <div className="text-[9px] font-normal text-slate-400">
+                                موجودی لحظه‌ای: <span className="font-bold text-slate-600 dark:text-slate-300">{toPersianDigits(it.product.total_stock)}</span> {it.product.unit || 'عدد'}
+                              </div>
+                            )}
+                          </td>
+                          <td className="p-3 text-center font-semibold text-slate-500">
+                            {it.product.unit || 'عدد'}
+                          </td>
+                          <td className="p-3">
+                            <input
+                              type="number"
+                              min={1}
+                              value={it.quantity}
+                              onChange={(e) => handleUpdateQty(it.product.id, Math.max(1, parseInt(e.target.value || '1')))}
+                              dir="ltr"
+                              onClick={moveCursorToEnd}
+                              onFocus={moveCursorToEnd}
+                              className="w-14 px-1 py-1 text-center font-bold font-mono border rounded-lg bg-slate-50 dark:bg-slate-950 focus:outline-none focus:border-indigo-500"
+                            />
+                          </td>
+                          <td className="p-3">
+                            <input
+                              type="number"
+                              value={it.price}
+                              onChange={(e) => handleUpdatePrice(it.product.id, Math.max(0, parseInt(e.target.value || '0')))}
+                              dir="ltr"
+                              onClick={moveCursorToEnd}
+                              onFocus={moveCursorToEnd}
+                              className="w-28 px-1 py-1 text-right font-bold font-mono border rounded-lg bg-slate-50 dark:bg-slate-950 focus:outline-none focus:border-indigo-500 no-spinners"
+                            />
+                          </td>
+                          <td className="p-3">
+                            <input
+                              type="number"
+                              value={it.discount}
+                              onChange={(e) => handleUpdateItemDiscount(it.product.id, Math.max(0, parseInt(e.target.value || '0')))}
+                              dir="ltr"
+                              onClick={moveCursorToEnd}
+                              onFocus={moveCursorToEnd}
+                              className="w-20 px-1 py-1 text-right font-bold font-mono border rounded-lg bg-slate-50 dark:bg-slate-950 focus:outline-none focus:border-indigo-500 no-spinners"
+                            />
+                          </td>
+                          <td className="p-3 text-center">
+                            <input
+                              type="number"
+                              min={0}
+                              max={100}
+                              value={it.taxRate}
+                              onChange={(e) => handleUpdateItemTaxRate(it.product.id, Math.min(100, Math.max(0, parseFloat(e.target.value || '0'))))}
+                              dir="ltr"
+                              onClick={moveCursorToEnd}
+                              onFocus={moveCursorToEnd}
+                              className="w-12 px-1 py-1 text-center font-bold font-mono border rounded-lg bg-slate-50 dark:bg-slate-950 focus:outline-none focus:border-indigo-500"
+                            />
+                          </td>
+                          <td className="p-3 text-left font-bold font-mono text-indigo-600 dark:text-indigo-400">
+                            {formatCurrency(lineTotal)}
+                          </td>
+                          <td className="p-3 text-center">
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveItem(it.product.id)}
+                              className="text-red-400 hover:text-red-500 hover:scale-105 transition-all"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -998,7 +1433,7 @@ export default function SalesInvoice() {
                   {installments.length > 0 && (
                     <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2.5">
                       <h4 className="text-[10px] font-extrabold text-indigo-600 dark:text-indigo-400">برنامه زمان‌بندی اقساط ماهانه:</h4>
-                      <div className="space-y-2">
+                      <div className="space-y-2 max-h-60 overflow-y-auto pr-1 scrollbar-thin">
                         {installments.map((inst, index) => (
                           <div key={index} className="flex items-center gap-2 bg-white dark:bg-slate-900 p-2 rounded-xl border border-slate-200/60 dark:border-slate-800 shadow-xs">
                             <span className="text-[10px] font-bold text-slate-500 w-12 text-center">قسط {index + 1}:</span>
@@ -1065,6 +1500,9 @@ export default function SalesInvoice() {
                   onFocus={moveCursorToEnd}
                   className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border rounded-xl text-right font-mono font-bold text-xs no-spinners"
                 />
+                <p className="text-[10px] text-slate-450 dark:text-slate-500 pr-1 leading-relaxed">
+                  <strong>تخفیف عمومی فاکتور:</strong> مبلغ ریالی که به عنوان تخفیف کلی به خریدار اعطا می‌کنید و مستقیماً از جمع ناخالص کسر می‌شود تا مبلغ نهایی پرداختی محاسبه گردد.
+                </p>
               </div>
 
               {/* VAT rate panel */}
@@ -1079,6 +1517,9 @@ export default function SalesInvoice() {
                   onFocus={moveCursorToEnd}
                   className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border rounded-xl text-right font-mono font-bold text-xs no-spinners"
                 />
+                <p className="text-[10px] text-slate-450 dark:text-slate-500 pr-1 leading-relaxed">
+                  <strong>مالیات ارزش افزوده:</strong> درصد مالیات قانونی صنف شما (به طور پیش‌فرض ۱۰ درصد) که روی مجموع خالص اعمال شده و برای محاسبات سود و ارسال گزارش فصلی مالیاتی استفاده می‌گردد.
+                </p>
               </div>
 
               {/* Description box */}
@@ -1100,24 +1541,76 @@ export default function SalesInvoice() {
                   <span>جمع ناخالص کل اقلام:</span>
                   <span className="font-mono font-bold text-slate-800 dark:text-slate-200">{formatCurrency(calculateSubtotal())} ریال</span>
                 </div>
+
+                {calculateItemsDiscount().gt(0) && (
+                  <div className="flex justify-between items-center text-rose-500">
+                    <span>مجموع تخفیف اقلام:</span>
+                    <span className="font-mono font-bold">-{formatCurrency(calculateItemsDiscount())} ریال</span>
+                  </div>
+                )}
                 
                 {discount > 0 && (
-                  <div className="flex justify-between items-center text-red-500">
-                    <span>تخفیف کسر شده:</span>
-                    <span className="font-mono font-bold">-{formatCurrency(discount)} ریال</span>
+                  <div className="flex justify-between items-center text-rose-500">
+                    <span>تخفیف عمومی فاکتور:</span>
+                    <span className="font-mono font-bold">-{formatCurrency(new Decimal(discount))} ریال</span>
                   </div>
                 )}
-
-                {taxRate > 0 && (
+                
+                {calculateItemsTax().gt(0) && (
                   <div className="flex justify-between items-center text-amber-600 dark:text-amber-400">
-                    <span>مالیات بر ارزش افزوده ({taxRate}%):</span>
-                    <span className="font-mono font-bold">+{formatCurrency(calculateTax())} ریال</span>
+                    <span>مجموع مالیات اقلام:</span>
+                    <span className="font-mono font-bold">+{formatCurrency(calculateItemsTax())} ریال</span>
                   </div>
                 )}
 
-                <div className="flex justify-between items-center text-slate-900 dark:text-white font-bold text-sm pt-2 border-t border-slate-100 dark:border-slate-800">
+                <div className="flex justify-between items-center text-slate-900 dark:text-white font-bold text-sm pt-2 border-t border-slate-150 dark:border-slate-850">
                   <span>مبلغ کل خالص فاکتور:</span>
                   <span className="font-mono text-indigo-600 dark:text-indigo-400 text-base">{formatCurrency(calculateFinalTotal())} ریال</span>
+                </div>
+
+                <div className="pt-2 border-t border-slate-100 dark:border-slate-800/50 space-y-2.5">
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium text-slate-700 dark:text-slate-300">مبلغ دریافتی نقدی / کارتخوان (ریال):</span>
+                      <input
+                        type="number"
+                        value={receivedAmount || ''}
+                        onChange={(e) => setReceivedAmount(Math.max(0, parseInt(e.target.value || '0')))}
+                        dir="ltr"
+                        onClick={moveCursorToEnd}
+                        onFocus={moveCursorToEnd}
+                        className="w-32 px-2 py-1 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-right font-mono font-bold text-xs no-spinners text-emerald-600 dark:text-emerald-400 focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                    <p className="text-[10px] text-slate-450 dark:text-slate-500 text-right leading-relaxed">
+                      <strong>مبلغ دریافتی نقدی:</strong> میزان پولی که در زمان صدور فاکتور به صورت نقد، کارت‌به‌کارت یا کارتخوان از مشتری اخذ شده است. این مبلغ مستقیماً صندوق یا حساب بانکی شما را افزایش می‌دهد و مابقی فاکتور نسیه خواهد شد.
+                    </p>
+                  </div>
+
+                  {selectedCustomer && (
+                    <div className="pt-1.5 border-t border-slate-100/50 dark:border-slate-800/30 space-y-1">
+                      <div className="flex justify-between items-center text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                        <span>مانده پس از ثبت فاکتور:</span>
+                        <span className="font-mono text-indigo-600 dark:text-indigo-400">
+                          {(() => {
+                            const prev = new Decimal(selectedCustomer.financial_balance || 0);
+                            const payable = calculateFinalTotal();
+                            const rec = new Decimal(receivedAmount || 0);
+                            const nextBal = prev.plus(payable).minus(rec);
+                            if (nextBal.gt(0)) {
+                              return `${toPersianDigits(nextBal.toLocaleString())} ریال بدهکار`;
+                            } else if (nextBal.lt(0)) {
+                              return `${toPersianDigits(Math.abs(nextBal.toNumber()).toLocaleString())} ریال بستانکار`;
+                            }
+                            return 'تسویه شده';
+                          })()}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-450 dark:text-slate-500 text-right leading-relaxed font-normal">
+                        <strong>ثبت به صورت نسیه (حساب دفتری):</strong> مابه‌التفاوت بهای فاکتور و مبلغ نقدی دریافتی، به صورت اعتبار نسیه دفتری لحاظ گردیده و بدهکاری این مشتری را در سیستم کل مالی به روزرسانی می‌کند تا در گزارش بدهکاران نشان داده شود.
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1148,8 +1641,14 @@ export default function SalesInvoice() {
           {/* Print preview CSS block to guarantee 100% margin-free official prints */}
           <style dangerouslySetInnerHTML={{ __html: `
             @media print {
+              /* Hide all unneeded UI elements completely */
+              header, aside, footer, nav, .sidebar, .header, .no-print, button, input, select, textarea, .fixed, .bg-slate-950\\/70, .inset-0 {
+                display: none !important;
+                visibility: hidden !important;
+              }
+
               /* Strip all background colors, borders, and shadows from parent containers */
-              html, body, #root, [role="dialog"], .fixed, .absolute, div, section, main {
+              html, body, #root, [role="dialog"], div, section, main {
                 background: transparent !important;
                 background-color: transparent !important;
                 box-shadow: none !important;
@@ -1158,6 +1657,8 @@ export default function SalesInvoice() {
                 height: auto !important;
                 min-height: 0 !important;
                 max-height: none !important;
+                margin: 0 !important;
+                padding: 0 !important;
               }
               
               /* Default everything as hidden */
@@ -1264,10 +1765,13 @@ export default function SalesInvoice() {
                       className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 font-bold text-white shadow-lg shadow-indigo-500/20 flex items-center justify-center gap-2 transition-all text-xs"
                     >
                       <Printer className="w-4 h-4" />
-                      <span>چاپ و پرینت فاکتور</span>
+                      <span>چاپ فاکتور / ذخیره به صورت PDF</span>
                     </button>
                     <p className="text-[9px] text-center text-slate-400 dark:text-slate-500 leading-normal">
-                      توجه: طراحی و جزئیات فاکتور (اعم از رنگ، متن‌های پانویس صنف پوشاک ملینا و غیره) صرفاً از صفحه اختصاصی «طراحی فاکتور» بارگذاری شده و در اینجا قابل دستیابی/تغییر نیست.
+                      راهنما: جهت ذخیره فاکتور به صورت فایل دیجیتال PDF، در پنجره چاپ مرورگر گزینه <strong>Save as PDF (ذخیره به عنوان PDF)</strong> را به عنوان مقصد چاپ انتخاب نمایید.
+                    </p>
+                    <p className="text-[9px] text-center text-slate-400 dark:text-slate-500 leading-normal">
+                      توجه: طراحی و جزئیات فاکتور صرفاً از صفحه اختصاصی «طراحی فاکتور» بارگذاری شده و در اینجا قابل تغییر نیست.
                     </p>
                   </div>
                 </div>
@@ -1278,44 +1782,34 @@ export default function SalesInvoice() {
                 
                 {/* 1. Thermal POS template preview */}
                 {printLayout === 'thermal' && (
-                  <div id="printable-invoice" className="w-80 bg-white text-slate-950 p-4 shadow-xl font-mono border-2 border-dashed border-slate-200 leading-relaxed text-[11px] select-all decoration-none animate-in fade-in zoom-in-95">
-                    <div className="text-center space-y-1">
-                      <p className="font-extrabold text-xs font-sans tracking-wide">{printShopName}</p>
-                      <p className="text-[9px] font-sans text-slate-500">{printShopSlogan}</p>
-                      <p className="text-[9px]">تلفن: {toPersianDigits(printShopPhone)}</p>
-                      <p className="border-b border-dashed my-2 border-slate-300"></p>
-                      <p className="text-[10px] text-right">شماره فاکتور: <strong className="font-sans">{toPersianDigits(printInvoiceNumber)}</strong></p>
-                      <p className="text-[10px] text-right">مشتری/خریدار: <span className="font-bold font-sans">{printCustomer ? `${printCustomer.first_name} ${printCustomer.last_name}` : 'عمومی'}</span></p>
-                    </div>
-
-                    <table className="w-full text-right mt-3 border-b border-dashed border-slate-300 pb-2">
-                      <thead>
-                        <tr className="border-b border-slate-200">
-                          <th className="font-bold pb-1 text-right">کالا/خدمت</th>
-                          <th className="text-center">تعداد</th>
-                          <th className="text-left font-bold pb-1">مجموع ({printColCurrencyLabel})</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {printItems.map(it => (
-                          <tr key={it.product.id}>
-                            <td className="pt-1.5 font-bold font-sans line-clamp-1">{it.product.name}</td>
-                            <td className="text-center pt-1.5">{toPersianDigits(it.quantity)}</td>
-                            <td className="text-left pt-1.5">{toPersianDigits(new Decimal(it.price).mul(it.quantity).toNumber().toLocaleString())}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-
-                    <div className="space-y-1 text-xs mt-3 text-right">
-                      <p className="flex justify-between"><span>جمع ناخالص کل:</span> <strong>{toPersianDigits(printCalculateSubtotal().toNumber().toLocaleString())} {printColCurrencyLabel}</strong></p>
-                      {printDiscount > 0 && <p className="flex justify-between text-rose-600"><span>تخفیف:</span> <strong>-{toPersianDigits(printDiscount.toLocaleString())} {printColCurrencyLabel}</strong></p>}
-                      <p className="flex justify-between font-bold border-t border-dashed border-slate-300 pt-1.5"><span>مبلغ نهایی تسویه:</span> <strong>{toPersianDigits(printCalculateFinalTotal().toNumber().toLocaleString())} {printColCurrencyLabel}</strong></p>
-                    </div>
-
-                    <p className="border-b border-dashed my-3 border-slate-300"></p>
-                    <p className="text-center text-[9px] font-sans text-slate-500">{printShopAddress}</p>
-                  </div>
+                  <CustomDesignedInvoice
+                    invoiceDesign={invoiceDesign}
+                    printLayout="thermal"
+                    printShopName={printShopName}
+                    printShopSlogan={printShopSlogan}
+                    printShopAddress={printShopAddress}
+                    printShopPhone={printShopPhone}
+                    printShopLogo={printShopLogo}
+                    invoiceNumber={printInvoiceNumber}
+                    paymentMethod={printPaymentMethod}
+                    selectedCustomer={printCustomer}
+                    items={printItems}
+                    discount={printDiscount}
+                    taxRate={taxRate}
+                    calculateSubtotal={printCalculateSubtotal}
+                    calculateTax={printCalculateTax}
+                    calculateFinalTotal={printCalculateFinalTotal}
+                    installments={printInstallments}
+                    description={printDescription}
+                    printColCodeLabel={printColCodeLabel}
+                    printColNameLabel={printColNameLabel}
+                    printColQtyLabel={printColQtyLabel}
+                    printColPriceLabel={printColPriceLabel}
+                    printColTotalLabel={printColTotalLabel}
+                    printColCurrencyLabel={printColCurrencyLabel}
+                    receivedAmount={printReceivedAmount}
+                    previousBalance={printPreviousBalance}
+                  />
                 )}
 
                 {/* 2. Professional A4 & A5 Invoice Formats (Standard design) */}
@@ -1345,6 +1839,8 @@ export default function SalesInvoice() {
                     printColPriceLabel={printColPriceLabel}
                     printColTotalLabel={printColTotalLabel}
                     printColCurrencyLabel={printColCurrencyLabel}
+                    receivedAmount={printReceivedAmount}
+                    previousBalance={printPreviousBalance}
                   />
                 )}
                 {false && (
@@ -1606,6 +2102,8 @@ export default function SalesInvoice() {
                     printColPriceLabel={printColPriceLabel}
                     printColTotalLabel={printColTotalLabel}
                     printColCurrencyLabel={printColCurrencyLabel}
+                    receivedAmount={printReceivedAmount}
+                    previousBalance={printPreviousBalance}
                   />
                 )}
                 {false && (

@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   addItem: (name) => ipcRenderer.invoke('addItem', name),
   getItems: () => ipcRenderer.invoke('getItems'),
   getDbStats: () => ipcRenderer.invoke('getDbStats'),
+  getDashboardData: () => ipcRenderer.invoke('getDashboardData'),
   changeDbPath: () => ipcRenderer.invoke('changeDbPath'),
   windowControl: (command) => ipcRenderer.send('window-control', command),
   getConfig: () => ipcRenderer.invoke('getConfig'),
@@ -64,6 +65,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveWarehouse: (data) => ipcRenderer.invoke('saveWarehouse', data),
   deleteWarehouse: (id) => ipcRenderer.invoke('deleteWarehouse', id),
   getWarehouseStocks: (warehouseId) => ipcRenderer.invoke('getWarehouseStocks', warehouseId),
+  getInventoryHistory: () => ipcRenderer.invoke('getInventoryHistory'),
+  addWarehouseTransaction: (data) => ipcRenderer.invoke('addWarehouseTransaction', data),
+  getProductSalesHistory: (productId) => ipcRenderer.invoke('getProductSalesHistory', productId),
+  getProductPurchaseHistory: (productId) => ipcRenderer.invoke('getProductPurchaseHistory', productId),
+  getProductInventoryCirculation: (productId) => ipcRenderer.invoke('getProductInventoryCirculation', productId),
 
   // Price updates & Audit trail API
   applyPriceUpdate: (data) => ipcRenderer.invoke('applyPriceUpdate', data),
@@ -74,5 +80,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Invoices & Sales API
   saveInvoice: (data) => ipcRenderer.invoke('saveInvoice', data),
   getInvoices: () => ipcRenderer.invoke('getInvoices'),
-  deleteInvoice: (id) => ipcRenderer.invoke('deleteInvoice', id)
+  deleteInvoice: (id) => ipcRenderer.invoke('deleteInvoice', id),
+  saveReturn: (data) => ipcRenderer.invoke('saveReturn', data),
+
+  // Debtors & Creditors, Quotas, and Goods Ledger API
+  getDebtorsCreditorsSummary: () => ipcRenderer.invoke('getDebtorsCreditorsSummary'),
+  getPersonQuotas: (personId) => ipcRenderer.invoke('getPersonQuotas', personId),
+  savePersonQuota: (data) => ipcRenderer.invoke('savePersonQuota', data),
+  deletePersonQuota: (id) => ipcRenderer.invoke('deletePersonQuota', id),
+  getPersonGoodsTransactions: (personId) => ipcRenderer.invoke('getPersonGoodsTransactions', personId),
+  addPersonGoodsTransaction: (data) => ipcRenderer.invoke('addPersonGoodsTransaction', data),
+  deletePersonGoodsTransaction: (id) => ipcRenderer.invoke('deletePersonGoodsTransaction', id),
+  getPersonFinancialTransactions: (personId) => ipcRenderer.invoke('getPersonFinancialTransactions', personId),
+  addPersonFinancialTransaction: (data) => ipcRenderer.invoke('addPersonFinancialTransaction', data),
+  deletePersonFinancialTransaction: (id) => ipcRenderer.invoke('deletePersonFinancialTransaction', id),
+  getPersonNotes: (personId) => ipcRenderer.invoke('getPersonNotes', personId),
+  addPersonNote: (data) => ipcRenderer.invoke('addPersonNote', data),
+  deletePersonNote: (id) => ipcRenderer.invoke('deletePersonNote', id),
+
+  // Cash and Bank APIs
+  getCashRegisters: () => ipcRenderer.invoke('getCashRegisters'),
+  getBankAccounts: () => ipcRenderer.invoke('getBankAccounts'),
+  addCashRegister: (name) => ipcRenderer.invoke('addCashRegister', name),
+  addBankAccount: (data) => ipcRenderer.invoke('addBankAccount', data),
+  getTreasuryTransactions: () => ipcRenderer.invoke('getTreasuryTransactions'),
+  addTreasuryTransaction: (data) => ipcRenderer.invoke('addTreasuryTransaction', data),
+  deleteTreasuryTransaction: (id) => ipcRenderer.invoke('deleteTreasuryTransaction', id)
 });

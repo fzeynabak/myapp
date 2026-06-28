@@ -7,15 +7,7 @@ import withReactContent from 'sweetalert2-react-content';
 
 const MySwal = withReactContent(Swal);
 
-declare global {
-  interface Window {
-    electronAPI?: {
-      windowControl: (command: string) => void;
-      getDbStats: () => Promise<any>;
-      changeDbPath: () => Promise<{ success: boolean; path?: string; error?: string }>;
-    }
-  }
-}
+// Global types for electronAPI are defined in types.ts
 
 interface LayoutProps {
   currentUser?: any;

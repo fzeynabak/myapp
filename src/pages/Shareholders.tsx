@@ -215,7 +215,8 @@ export default function Shareholders() {
     return profit.times(share).toFixed(0);
   };
 
-  const availablePersons = persons.filter(p => !shareholders.some(s => s.person_id === p.id));
+  // Filter persons who are already registered in the shareholders table and are marked as shareholder
+  const availablePersons = persons.filter(p => p.is_shareholder === 1 && !shareholders.some(s => s.person_id === p.id));
 
   return (
     <div className="h-full flex flex-col space-y-6 pb-20 overflow-y-auto custom-scrollbar pr-1 animate-in fade-in duration-500" dir="rtl">

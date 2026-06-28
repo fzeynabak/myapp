@@ -23,13 +23,34 @@ import {
   Activity,
   UserCheck,
   Check,
-  UserCircle2
+  UserCircle2,
+  ShoppingBag,
+  FileEdit,
+  Printer,
+  ShoppingCart,
+  ArrowDownLeft,
+  ArrowUpRight
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Person } from '../types';
 import { useNavigate } from 'react-router-dom';
+import Decimal from 'decimal.js';
+import JalaliDatePicker, { toPersianDigits, getTodayJalali } from '../components/JalaliDatePicker';
 
 const MySwal = withReactContent(Swal);
+
+// Helper to format currency in Rial with Persian digits
+const formatPersianCurrency = (amount: number): string => {
+  const rounded = Math.round(amount);
+  const formatted = rounded.toLocaleString('fa-IR');
+  return formatted;
+};
+
+// Shamsi date helper
+const getTodayShamsi = () => {
+  const t = getTodayJalali();
+  return `${t.y}/${String(t.m).padStart(2, '0')}/${String(t.d).padStart(2, '0')}`;
+};
 
 export default function PersonList() {
   const navigate = useNavigate();
@@ -40,12 +61,54 @@ export default function PersonList() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
   
+  // Account details and ledger states
+  const [financialTransactions, setFinancialTransactions] = useState<any[]>([]);
+  const [personInvoices, setPersonInvoices] = useState<any[]>([]);
+  const [calculatedBalance, setCalculatedBalance] = useState<number>(0);
+  const [isLoadingDetails, setIsLoadingDetails] = useState(false);
+  
+  // Person detail modal tabs and notes state
+  const [detailActiveTab, setDetailActiveTab] = useState<'info' | 'ledger' | 'sales' | 'purchases' | 'tx' | 'notes'>('info');
+  const [personNotes, setPersonNotes] = useState<any[]>([]);
+  const [noteForm, setNoteForm] = useState({
+    description: '',
+    followup_date: '',
+    reminder: 'خیر'
+  });
+
+  // Quick transaction form toggles
+  const [showQuickTxModal, setShowQuickTxModal] = useState<'received' | 'paid' | null>(null);
+  const [quickTxForm, setQuickTxForm] = useState({
+    amount: '',
+    date: '',
+    description: ''
+  });
+  
   // Edit form state
   const [editForm, setEditForm] = useState<Partial<Person>>({});
   const [isLoading, setIsLoading] = useState(false);
 
+  const [storeInfo, setStoreInfo] = useState<any>({
+    name: 'حسابداری ملینا',
+    phone: '۰۲۱-۵۵۶۶۷۷۸۸',
+    address: 'تهران، بازار بزرگ، سرای ملی، طبقه اول'
+  });
+
   useEffect(() => {
     fetchPersons();
+    const fetchStore = async () => {
+      try {
+        if (window.electronAPI?.checkOnboardingStatus) {
+          const res = await window.electronAPI.checkOnboardingStatus();
+          if (res?.storeInfo) {
+            setStoreInfo(res.storeInfo);
+          }
+        }
+      } catch (e) {
+        console.error('Error fetching onboarding store info:', e);
+      }
+    };
+    fetchStore();
   }, []);
 
   const fetchPersons = async () => {
@@ -150,9 +213,303 @@ export default function PersonList() {
     setIsEditModalOpen(true);
   };
 
-  const handleDetailClick = (person: Person) => {
+  const handleDetailClick = async (person: Person) => {
     setSelectedPerson(person);
     setIsDetailModalOpen(true);
+    setIsLoadingDetails(true);
+    try {
+      let txList: any[] = [];
+      let invList: any[] = [];
+
+      if (window.electronAPI?.getPersonFinancialTransactions) {
+        txList = await window.electronAPI.getPersonFinancialTransactions(person.id);
+        setFinancialTransactions(txList);
+      }
+      
+      if (window.electronAPI?.getInvoices) {
+        const allInvoices = await window.electronAPI.getInvoices();
+        invList = allInvoices.filter(inv => inv.customer_id === person.id);
+        setPersonInvoices(invList);
+      }
+
+      // Calculate balance using decimal.js
+      let bal = new Decimal(0);
+      invList.forEach(inv => {
+        if (inv.status !== 'پرداخت شده') {
+          bal = bal.plus(new Decimal(inv.final_amount || 0));
+        }
+      });
+      txList.forEach(tx => {
+        bal = bal.plus(new Decimal(tx.amount || 0));
+      });
+      setCalculatedBalance(bal.toNumber());
+      
+      setDetailActiveTab('info');
+      if (window.electronAPI?.getPersonNotes) {
+        const notes = await window.electronAPI.getPersonNotes(person.id);
+        setPersonNotes(notes || []);
+      }
+
+    } catch (err) {
+      console.error('Error loading person account details:', err);
+    } finally {
+      setIsLoadingDetails(false);
+    }
+  };
+
+  const fetchPersonNotes = async (personId: number) => {
+    if (window.electronAPI?.getPersonNotes) {
+      try {
+        const notes = await window.electronAPI.getPersonNotes(personId);
+        setPersonNotes(notes || []);
+      } catch (err) {
+        console.error('Error fetching person notes:', err);
+      }
+    }
+  };
+
+  const handleAddNoteSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedPerson || !noteForm.description) return;
+    if (window.electronAPI?.addPersonNote) {
+      try {
+        const res = await window.electronAPI.addPersonNote({
+          person_id: selectedPerson.id,
+          description: noteForm.description,
+          followup_date: noteForm.followup_date || getTodayShamsi(),
+          reminder: noteForm.reminder || 'خیر'
+        });
+        if (res.success) {
+          setNoteForm({ description: '', followup_date: '', reminder: 'خیر' });
+          fetchPersonNotes(selectedPerson.id);
+          MySwal.fire({
+            icon: 'success',
+            title: 'یادداشت ثبت شد',
+            text: 'یادداشت با موفقیت برای این شخص ثبت گردید.',
+            timer: 1500,
+            showConfirmButton: false,
+            toast: true,
+            position: 'top-end'
+          });
+        }
+      } catch (err: any) {
+        MySwal.fire('خطا', err.message || 'مشکل در ثبت یادداشت', 'error');
+      }
+    }
+  };
+
+  const handleDeleteNote = async (id: number) => {
+    if (!selectedPerson) return;
+    const confirm = await MySwal.fire({
+      title: 'آیا از حذف این یادداشت مطمئن هستید؟',
+      text: 'این عمل غیرقابل بازگشت است.',
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'بله، حذف شود',
+      cancelButtonText: 'انصراف',
+      confirmButtonColor: '#ef4444',
+      cancelButtonColor: '#6b7280'
+    });
+
+    if (confirm.isConfirmed && window.electronAPI?.deletePersonNote) {
+      try {
+        const res = await window.electronAPI.deletePersonNote(id);
+        if (res.success) {
+          fetchPersonNotes(selectedPerson.id);
+          MySwal.fire({
+            icon: 'success',
+            title: 'یادداشت حذف شد',
+            text: 'یادداشت انتخابی با موفقیت حذف گردید.',
+            timer: 1500,
+            showConfirmButton: false,
+            toast: true,
+            position: 'top-end'
+          });
+        }
+      } catch (err: any) {
+        MySwal.fire('خطا', err.message || 'مشکل در حذف یادداشت', 'error');
+      }
+    }
+  };
+
+  const getLedgerStatement = () => {
+    const list: any[] = [];
+
+    // Add Invoices (including paid ones, so that the ledger balance is always complete and correct)
+    personInvoices.forEach(inv => {
+      const amt = inv.final_amount || 0;
+      
+      if (inv.type === 'برگشت از فروش') {
+        list.push({
+          id: `inv-${inv.id}`,
+          date: inv.invoice_date || inv.date || getTodayShamsi(),
+          type: 'برگشت از فروش',
+          description: inv.description || `برگشت از فروش شماره #${toPersianDigits(inv.invoice_number)}`,
+          debit: 0,
+          credit: amt,
+          rawDate: inv.invoice_date || inv.date || '',
+          sortKey: 1
+        });
+      } else if (inv.type === 'برگشت از خرید') {
+        list.push({
+          id: `inv-${inv.id}`,
+          date: inv.invoice_date || inv.date || getTodayShamsi(),
+          type: 'برگشت از خرید (تامین‌کننده)',
+          description: inv.description || `برگشت به تامین‌کننده شماره #${toPersianDigits(inv.invoice_number)}`,
+          debit: amt,
+          credit: 0,
+          rawDate: inv.invoice_date || inv.date || '',
+          sortKey: 1
+        });
+      } else {
+        const isPurchase = inv.type === 'Purchase' || inv.type === 'purchase' || inv.is_purchase === 1 || inv.type === 'فاکتور خرید' || inv.type === 'خرید';
+        if (isPurchase) {
+          list.push({
+            id: `inv-${inv.id}`,
+            date: inv.invoice_date || inv.date || getTodayShamsi(),
+            type: 'فاکتور خرید',
+            description: inv.description || `فاکتور خرید شماره #${toPersianDigits(inv.invoice_number)}`,
+            debit: 0,
+            credit: amt,
+            rawDate: inv.invoice_date || inv.date || '',
+            sortKey: 1
+          });
+        } else {
+          list.push({
+            id: `inv-${inv.id}`,
+            date: inv.invoice_date || inv.date || getTodayShamsi(),
+            type: 'فاکتور فروش',
+            description: inv.description || `فاکتور فروش شماره #${toPersianDigits(inv.invoice_number)}`,
+            debit: amt,
+            credit: 0,
+            rawDate: inv.invoice_date || inv.date || '',
+            sortKey: 1
+          });
+        }
+      }
+    });
+
+    // Add financial transactions
+    financialTransactions.forEach(tx => {
+      // Filter out double-counted return transactions since return invoices represent them directly
+      if (tx.type === 'sales_return' || tx.type === 'purchase_return') {
+        return;
+      }
+      const amt = Math.abs(tx.amount || 0);
+      if (tx.amount < 0 || tx.type === 'received') {
+        list.push({
+          id: `tx-${tx.id}`,
+          date: tx.date || getTodayShamsi(),
+          type: 'دریافت وجه',
+          description: tx.description || 'دریافت نقدی وجه',
+          debit: 0,
+          credit: amt,
+          rawDate: tx.date || '',
+          sortKey: 2
+        });
+      } else {
+        list.push({
+          id: `tx-${tx.id}`,
+          date: tx.date || getTodayShamsi(),
+          type: 'پرداخت وجه',
+          description: tx.description || 'پرداخت نقدی وجه',
+          debit: amt,
+          credit: 0,
+          rawDate: tx.date || '',
+          sortKey: 3
+        });
+      }
+    });
+
+    // Sort by date (chronologically oldest first)
+    list.sort((a, b) => {
+      if (a.rawDate !== b.rawDate) {
+        return a.rawDate.localeCompare(b.rawDate);
+      }
+      return a.sortKey - b.sortKey;
+    });
+
+    // Compute running balance
+    let running = new Decimal(0);
+    const result = list.map(item => {
+      if (item.debit > 0) {
+        running = running.plus(new Decimal(item.debit));
+      } 
+      if (item.credit > 0) {
+        running = running.minus(new Decimal(item.credit));
+      }
+      return {
+        ...item,
+        runningBalance: running.toNumber()
+      };
+    });
+
+    return result;
+  };
+
+  const handleQuickTxSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedPerson || !quickTxForm.amount || !showQuickTxModal) return;
+
+    try {
+      if (window.electronAPI?.addPersonFinancialTransaction) {
+        const rawAmount = parseFloat(quickTxForm.amount);
+        let finalAmount = rawAmount;
+        if (showQuickTxModal === 'received') {
+          finalAmount = -rawAmount; // credit (customer paid us)
+        } else if (showQuickTxModal === 'paid') {
+          finalAmount = rawAmount; // debit (we paid customer)
+        }
+
+        const txDate = quickTxForm.date || getTodayShamsi();
+
+        const res = await window.electronAPI.addPersonFinancialTransaction({
+          person_id: selectedPerson.id,
+          date: txDate,
+          type: showQuickTxModal,
+          amount: finalAmount,
+          description: quickTxForm.description || (showQuickTxModal === 'received' ? 'دریافت نقدی سریع' : 'پرداخت نقدی سریع')
+        });
+
+        if (res.success) {
+          MySwal.fire({
+            icon: 'success',
+            title: 'ثبت موفقیت‌آمیز',
+            text: 'تراکنش مالی جدید با موفقیت ثبت گردید.',
+            timer: 1500,
+            showConfirmButton: false,
+            toast: true,
+            position: 'top-end'
+          });
+
+          // Reset form and close modal
+          setQuickTxForm({ amount: '', date: '', description: '' });
+          setShowQuickTxModal(null);
+
+          // Reload the details for selected person if details drawer is open
+          if (isDetailModalOpen) {
+            await handleDetailClick(selectedPerson);
+          } else {
+            setSelectedPerson(null);
+          }
+          // Also refetch persons to update list if needed
+          await fetchPersons();
+        }
+      }
+    } catch (err) {
+      console.error('Error submitting quick financial transaction:', err);
+      MySwal.fire('خطا', 'ثبت تراکنش با خطا مواجه شد.', 'error');
+    }
+  };
+
+  const handleQuickSale = (person: any) => {
+    localStorage.setItem('preselected_customer_id', String(person.id));
+    navigate('/sales/new-invoice');
+  };
+
+  const handleQuickPurchase = (person: any) => {
+    localStorage.setItem('preselected_supplier_id', String(person.id));
+    navigate('/inventory/control');
   };
 
   const handleDelete = async (id: number) => {
@@ -573,6 +930,53 @@ export default function PersonList() {
                     </div>
                   )}
 
+                  {/* Quick Transactions Toolbar */}
+                  <div className="mt-3 bg-slate-50/70 dark:bg-slate-950/20 p-2 rounded-xl border border-dashed border-slate-150 dark:border-slate-800 flex flex-col gap-1.5">
+                    <span className="text-[9px] font-black text-slate-400 dark:text-slate-500 mr-1 block">عملیات مالی سریع</span>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {/* فروش جدید (New Sale) */}
+                      <button
+                        onClick={() => handleQuickSale(person)}
+                        className="flex items-center justify-center gap-1 py-1 px-1.5 bg-indigo-50/50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/20 dark:hover:bg-indigo-900/40 dark:text-indigo-300 rounded-lg text-[10px] font-bold transition-all cursor-pointer border border-indigo-100/30"
+                      >
+                        <ShoppingCart className="w-3.5 h-3.5" />
+                        <span>فروش جدید</span>
+                      </button>
+                      {/* خرید جدید (New Purchase) */}
+                      <button
+                        onClick={() => handleQuickPurchase(person)}
+                        className="flex items-center justify-center gap-1 py-1 px-1.5 bg-amber-50/50 hover:bg-amber-100 text-amber-700 dark:bg-amber-950/20 dark:hover:bg-amber-900/40 dark:text-amber-300 rounded-lg text-[10px] font-bold transition-all cursor-pointer border border-amber-100/30"
+                      >
+                        <ShoppingBag className="w-3.5 h-3.5" />
+                        <span>خرید جدید</span>
+                      </button>
+                      {/* دریافت (Receive) */}
+                      <button
+                        onClick={() => {
+                          setSelectedPerson(person);
+                          setShowQuickTxModal('received');
+                          setQuickTxForm({ amount: '', date: getTodayShamsi(), description: '' });
+                        }}
+                        className="flex items-center justify-center gap-1 py-1 px-1.5 bg-emerald-50/50 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/20 dark:hover:bg-emerald-900/40 dark:text-emerald-300 rounded-lg text-[10px] font-bold transition-all cursor-pointer border border-emerald-100/30"
+                      >
+                        <ArrowDownLeft className="w-3.5 h-3.5" />
+                        <span>دریافت وجه</span>
+                      </button>
+                      {/* پرداخت (Pay) */}
+                      <button
+                        onClick={() => {
+                          setSelectedPerson(person);
+                          setShowQuickTxModal('paid');
+                          setQuickTxForm({ amount: '', date: getTodayShamsi(), description: '' });
+                        }}
+                        className="flex items-center justify-center gap-1 py-1 px-1.5 bg-rose-50/50 hover:bg-rose-100 text-rose-700 dark:bg-rose-950/20 dark:hover:bg-rose-900/40 dark:text-rose-300 rounded-lg text-[10px] font-bold transition-all cursor-pointer border border-rose-100/30"
+                      >
+                        <ArrowUpRight className="w-3.5 h-3.5" />
+                        <span>پرداخت وجه</span>
+                      </button>
+                    </div>
+                  </div>
+
                   {/* Button interactions toolbar */}
                   <div className="flex items-center justify-between gap-1">
                     <button 
@@ -607,157 +1011,1016 @@ export default function PersonList() {
       )}
 
       {/* --- Details Drawer / modal --- */}
-      {isDetailModalOpen && selectedPerson && (
-        <div className="fixed inset-0 bg-slate-950/65 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-2xl w-full max-h-[85vh] overflow-y-auto custom-scrollbar shadow-2xl border border-slate-100 dark:border-slate-800 p-8 relative">
-            <button 
-              onClick={() => setIsDetailModalOpen(false)}
-              className="absolute left-6 top-6 p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-850 transition-all text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
-            >
-              <X className="w-5 h-5" />
-            </button>
+      {isDetailModalOpen && selectedPerson && (() => {
+        // Compute financial totals using decimal.js for absolute precision
+        const totalSales = personInvoices.reduce((sum, inv) => {
+          if (inv.status !== 'لغو شده') {
+            return sum.plus(new Decimal(inv.final_amount || 0));
+          }
+          return sum;
+        }, new Decimal(0));
 
-            <div className="flex items-center gap-4 mb-8 border-b border-slate-100 dark:border-slate-800 pb-5">
-              <div className={cn(
-                "w-14 h-14 rounded-2xl overflow-hidden flex items-center justify-center shadow-xl bg-slate-100 dark:bg-slate-800 shrink-0",
-                !selectedPerson.avatar && (selectedPerson.is_shareholder === 1 ? "bg-emerald-500 text-white" : selectedPerson.is_employee === 1 ? "bg-sky-500 text-white" : "bg-indigo-500 text-white")
-              )}>
-                {selectedPerson.avatar ? (
-                  <img src={selectedPerson.avatar} alt={getFullName(selectedPerson)} className="w-full h-full object-cover" />
-                ) : selectedPerson.type === 'حقیقی' ? (
-                  <User className="w-7 h-7" />
-                ) : (
-                  <Building2 className="w-7 h-7" />
-                )}
+        const totalPurchases = new Decimal(0); // For now, all transactions in the goods/financial ledger are sales.
+
+        const totalReceived = personInvoices.reduce((sum, inv) => {
+          if (inv.status === 'پرداخت شده') {
+            return sum.plus(new Decimal(inv.final_amount || 0));
+          }
+          return sum;
+        }, new Decimal(0)).plus(
+          financialTransactions.reduce((sum, tx) => {
+            if (tx.type === 'received' || tx.amount < 0) {
+              return sum.plus(new Decimal(Math.abs(tx.amount || 0)));
+            }
+            return sum;
+          }, new Decimal(0))
+        );
+
+        const totalPaid = financialTransactions.reduce((sum, tx) => {
+          if (tx.type === 'paid' || tx.amount > 0) {
+            return sum.plus(new Decimal(Math.abs(tx.amount || 0)));
+          }
+          return sum;
+        }, new Decimal(0));
+
+        const ledger = getLedgerStatement();
+        const finalBalance = new Decimal(ledger.length > 0 ? ledger[ledger.length - 1].runningBalance : 0);
+
+        const handlePrintStatement = () => {
+          if (!selectedPerson) return;
+
+          const ledger = getLedgerStatement();
+          
+          // Construct HTML content
+          const htmlContent = `
+            <div style="font-family: 'Vazirmatn', sans-serif; direction: rtl; padding: 30px; color: #0f172a; line-height: 1.6; background-color: #ffffff;">
+              <!-- Print Header -->
+              <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #cbd5e1; padding-bottom: 18px; margin-bottom: 25px;">
+                <div>
+                  <h1 style="font-size: 22px; font-weight: 900; color: #1e3a8a; margin: 0 0 6px 0;">صورت وضعیت پرونده و گردش حساب مالی</h1>
+                  <p style="font-size: 12px; color: #475569; margin: 0; font-weight: bold;">مجموعه تجاری: ${storeInfo.name || 'حسابداری ملینا'}</p>
+                </div>
+                <div style="text-align: left; font-size: 11px; color: #334155; line-height: 1.8;">
+                  <div><strong>تاریخ تهیه گزارش:</strong> ${toPersianDigits(getTodayShamsi())}</div>
+                  <div><strong>شماره تماس:</strong> ${toPersianDigits(storeInfo.phone || '۰۲۱-۵۵۶۶۷۷۸۸')}</div>
+                  <div style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"><strong>نشانی:</strong> ${storeInfo.address || 'تهران، بازار بزرگ، سرای ملی'}</div>
+                </div>
               </div>
-              <div>
-                <h3 className="text-xl font-extrabold text-slate-800 dark:text-slate-100">{getFullName(selectedPerson)}</h3>
-                <p className="text-xs text-indigo-500 font-mono mt-0.5">کد حسابداری کل: {selectedPerson.accounting_code}</p>
+
+              <!-- Person Information Box -->
+              <div style="background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 12px; padding: 15px; margin-bottom: 25px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; font-size: 11px; line-height: 2;">
+                <div>
+                  <div><strong>نام و نام خانوادگی:</strong> ${getFullName(selectedPerson)}</div>
+                  <div><strong>نام مستعار/شهرت:</strong> ${selectedPerson.nickname || '---'}</div>
+                  <div><strong>تلفن تماس:</strong> ${toPersianDigits(selectedPerson.phone1) || '---'}</div>
+                </div>
+                <div style="border-right: 1px solid #cbd5e1; padding-right: 20px;">
+                  <div><strong>کد ملی / شناسه ملی:</strong> ${toPersianDigits(selectedPerson.national_id) || '---'}</div>
+                  <div><strong>کد حسابداری پرونده:</strong> ${toPersianDigits(selectedPerson.accounting_code)}</div>
+                  <div><strong>نشانی محل سکونت / تجارت:</strong> ${selectedPerson.address || 'ثبت نشده'}</div>
+                </div>
+              </div>
+
+              <!-- Financial Summary Box -->
+              <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 25px;">
+                <div style="background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 12px; border-radius: 10px; text-align: center;">
+                  <span style="font-size: 10px; color: #475569; display: block; margin-bottom: 4px; font-weight: bold;">مجموع فاکتورهای فروش</span>
+                  <strong style="font-size: 13px; color: #1e3a8a;">${formatPersianCurrency(totalSales.toNumber())} <span style="font-size: 9px;">ریال</span></strong>
+                </div>
+                <div style="background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 12px; border-radius: 10px; text-align: center;">
+                  <span style="font-size: 10px; color: #475569; display: block; margin-bottom: 4px; font-weight: bold;">مجموع فاکتورهای خرید</span>
+                  <strong style="font-size: 13px; color: #b45309;">${formatPersianCurrency(totalPurchases.toNumber())} <span style="font-size: 9px;">ریال</span></strong>
+                </div>
+                <div style="background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 12px; border-radius: 10px; text-align: center;">
+                  <span style="font-size: 10px; color: #475569; display: block; margin-bottom: 4px; font-weight: bold;">مجموع کل دریافت‌ها</span>
+                  <strong style="font-size: 13px; color: #047857;">${formatPersianCurrency(totalReceived.toNumber())} <span style="font-size: 9px;">ریال</span></strong>
+                </div>
+                <div style="background-color: ${finalBalance.greaterThan(0) ? '#fef2f2' : finalBalance.lessThan(0) ? '#ecfdf5' : '#f8fafc'}; border: 1px solid ${finalBalance.greaterThan(0) ? '#fca5a5' : finalBalance.lessThan(0) ? '#6ee7b7' : '#cbd5e1'}; padding: 12px; border-radius: 10px; text-align: center;">
+                  <span style="font-size: 10px; color: #475569; display: block; margin-bottom: 4px; font-weight: bold;">مانده نهایی حساب</span>
+                  <strong style="font-size: 14px; color: ${finalBalance.greaterThan(0) ? '#b91c1c' : finalBalance.lessThan(0) ? '#047857' : '#334155'};">
+                    ${formatPersianCurrency(Math.abs(finalBalance.toNumber()))} <span style="font-size: 9px;">ریال</span>
+                  </strong>
+                  <span style="font-size: 8px; display: block; margin-top: 2px; font-weight: bold; color: ${finalBalance.greaterThan(0) ? '#b91c1c' : finalBalance.lessThan(0) ? '#047857' : '#475569'};">
+                    (${finalBalance.greaterThan(0) ? 'بدهکار' : finalBalance.lessThan(0) ? 'بستانکار' : 'تسویه شده'})
+                  </span>
+                </div>
+              </div>
+
+              <!-- Ledger Circulation Table -->
+              <h3 style="font-size: 13px; font-weight: 900; margin: 0 0 10px 0; border-bottom: 1px solid #cbd5e1; padding-bottom: 6px; color: #1e3a8a;">گردش تراکنش‌های مالی و کارکرد حسابداری (دفتر روزنامه شخص)</h3>
+              <table style="width: 100%; border-collapse: collapse; font-size: 10px; text-align: right; margin-bottom: 30px;">
+                <thead>
+                  <tr style="background-color: #f8fafc; border-bottom: 2px solid #cbd5e1; color: #1e293b; font-weight: 900;">
+                    <th style="padding: 10px; border: 1px solid #cbd5e1; width: 90px; text-align: center;">تاریخ سند</th>
+                    <th style="padding: 10px; border: 1px solid #cbd5e1; width: 110px; text-align: center;">نوع عملیات</th>
+                    <th style="padding: 10px; border: 1px solid #cbd5e1;">شرح تفصیلی تراکنش</th>
+                    <th style="padding: 10px; border: 1px solid #cbd5e1; text-align: left; width: 120px;">بدهکار (ریال)</th>
+                    <th style="padding: 10px; border: 1px solid #cbd5e1; text-align: left; width: 120px;">بستانکار (ریال)</th>
+                    <th style="padding: 10px; border: 1px solid #cbd5e1; text-align: left; width: 130px;">مانده نهایی (ریال)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${ledger.length === 0 ? `
+                    <tr>
+                      <td colspan="6" style="padding: 25px; text-align: center; color: #64748b; border: 1px solid #cbd5e1; font-weight: bold;">هیچ سند مالی یا گردش حسابی برای این پرونده ثبت نگردیده است.</td>
+                    </tr>
+                  ` : ledger.map(item => `
+                    <tr style="border-bottom: 1px solid #cbd5e1;">
+                      <td style="padding: 8px; border: 1px solid #cbd5e1; text-align: center; font-family: monospace;">${toPersianDigits(item.date)}</td>
+                      <td style="padding: 8px; border: 1px solid #cbd5e1; text-align: center; font-weight: bold; color: ${item.debit > 0 ? '#b91c1c' : '#047857'}">${item.type}</td>
+                      <td style="padding: 8px; border: 1px solid #cbd5e1; color: #334155; font-weight: bold;">${item.description}</td>
+                      <td style="padding: 8px; border: 1px solid #cbd5e1; text-align: left; font-family: monospace;">${item.debit > 0 ? formatPersianCurrency(item.debit) : '۰'}</td>
+                      <td style="padding: 8px; border: 1px solid #cbd5e1; text-align: left; font-family: monospace;">${item.credit > 0 ? formatPersianCurrency(item.credit) : '۰'}</td>
+                      <td style="padding: 8px; border: 1px solid #cbd5e1; text-align: left; font-family: monospace; font-weight: bold; color: ${item.runningBalance > 0 ? '#b91c1c' : item.runningBalance < 0 ? '#047857' : '#334155'}">
+                        ${formatPersianCurrency(Math.abs(item.runningBalance))} ${item.runningBalance > 0 ? 'بدهکار' : item.runningBalance < 0 ? 'بستانکار' : 'تصفیه'}
+                      </td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+
+              <!-- Invoices List Table -->
+              <h3 style="font-size: 13px; font-weight: 900; margin: 0 0 10px 0; border-bottom: 1px solid #cbd5e1; padding-bottom: 6px; color: #1e3a8a;">فهرست فاکتورهای صادره</h3>
+              <table style="width: 100%; border-collapse: collapse; font-size: 10px; text-align: right; margin-bottom: 40px;">
+                <thead>
+                  <tr style="background-color: #f8fafc; border-bottom: 2px solid #cbd5e1; color: #1e293b; font-weight: 900;">
+                    <th style="padding: 10px; border: 1px solid #cbd5e1; width: 150px; text-align: center;">شماره فاکتور</th>
+                    <th style="padding: 10px; border: 1px solid #cbd5e1; width: 120px; text-align: center;">تاریخ صدور فاکتور</th>
+                    <th style="padding: 10px; border: 1px solid #cbd5e1; text-align: left; width: 180px;">مبلغ کل فاکتور (ریال)</th>
+                    <th style="padding: 10px; border: 1px solid #cbd5e1; text-align: center; width: 140px;">وضعیت تسویه</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${personInvoices.length === 0 ? `
+                    <tr>
+                      <td colspan="4" style="padding: 25px; text-align: center; color: #64748b; border: 1px solid #cbd5e1; font-weight: bold;">هیچ فاکتوری برای این پرونده صادر نگردیده است.</td>
+                    </tr>
+                  ` : personInvoices.map(inv => `
+                    <tr style="border-bottom: 1px solid #cbd5e1;">
+                      <td style="padding: 8px; border: 1px solid #cbd5e1; text-align: center; font-family: monospace; font-weight: bold;">${toPersianDigits(inv.invoice_number)}</td>
+                      <td style="padding: 8px; border: 1px solid #cbd5e1; text-align: center; font-family: monospace;">${toPersianDigits(inv.date || inv.created_at?.split('T')[0] || '')}</td>
+                      <td style="padding: 8px; border: 1px solid #cbd5e1; text-align: left; font-family: monospace; font-weight: bold;">${formatPersianCurrency(inv.final_amount || 0)}</td>
+                      <td style="padding: 8px; border: 1px solid #cbd5e1; text-align: center;">
+                        <span style="padding: 3px 10px; border-radius: 12px; font-size: 8px; font-weight: bold; background-color: ${inv.status === 'پرداخت شده' ? '#d1fae5' : inv.status === 'لغو شده' ? '#f1f5f9' : '#fef3c7'}; color: ${inv.status === 'پرداخت شده' ? '#065f46' : inv.status === 'لغو شده' ? '#475569' : '#92400e'}; border: 1px solid ${inv.status === 'پرداخت شده' ? '#a7f3d0' : inv.status === 'لغو شده' ? '#cbd5e1' : '#fde68a'};">
+                          ${inv.status}
+                        </span>
+                      </td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+
+              <!-- Signature Section -->
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 60px; font-size: 12px; font-weight: bold;">
+                <div style="text-align: center; width: 220px; border: 1px dashed #cbd5e1; padding: 15px; border-radius: 8px;">
+                  <p style="margin: 0 0 40px 0; color: #475569;">امضا و مهر دایره مالی فروشگاه</p>
+                  <div style="height: 30px;"></div>
+                </div>
+                <div style="text-align: center; width: 220px; border: 1px dashed #cbd5e1; padding: 15px; border-radius: 8px;">
+                  <p style="margin: 0 0 40px 0; color: #475569;">تاییدیه و امضای صاحب حساب (مشتری)</p>
+                  <div style="height: 30px;"></div>
+                </div>
               </div>
             </div>
+          `;
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Box 1: Contact */}
-              <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 rounded-3xl p-5 space-y-4">
-                <h4 className="text-xs font-black text-slate-400 dark:text-slate-500 uppercase tracking-wider flex items-center gap-2 mb-2">
-                  <Phone className="w-4 h-4 text-indigo-500" />
-                  اطلاعات تماس
-                </h4>
-                <div>
-                  <span className="text-[10px] text-slate-400">تلفن همراه :</span>
-                  <p className="font-bold text-slate-750 dark:text-slate-300 font-mono dir-ltr text-right mt-1">{selectedPerson.phone1 || 'تنظیم نشده'}</p>
+          // Create temporary print container
+          const printContainer = document.createElement('div');
+          printContainer.id = 'print-temp-container';
+          printContainer.innerHTML = htmlContent;
+          document.body.appendChild(printContainer);
+
+          // Trigger print
+          window.print();
+
+          // Cleanup
+          document.body.removeChild(printContainer);
+        };
+
+        return (
+          <div className="fixed inset-0 bg-slate-950/65 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+            <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-4xl w-full max-h-[90vh] overflow-y-auto custom-scrollbar shadow-2xl border border-slate-100 dark:border-slate-800 p-8 relative">
+              
+              {/* Close Button */}
+              <button 
+                onClick={() => setIsDetailModalOpen(false)}
+                className="absolute left-6 top-6 p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-850 transition-all text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              {/* Profile Header */}
+              <div className="flex items-center gap-4 mb-6 border-b border-slate-100 dark:border-slate-800 pb-5">
+                <div className={cn(
+                  "w-14 h-14 rounded-2xl overflow-hidden flex items-center justify-center shadow-xl bg-slate-100 dark:bg-slate-800 shrink-0",
+                  !selectedPerson.avatar && (selectedPerson.is_shareholder === 1 ? "bg-emerald-500 text-white" : selectedPerson.is_employee === 1 ? "bg-sky-500 text-white" : "bg-indigo-500 text-white")
+                )}>
+                  {selectedPerson.avatar ? (
+                    <img src={selectedPerson.avatar} alt={getFullName(selectedPerson)} className="w-full h-full object-cover" />
+                  ) : selectedPerson.type === 'حقیقی' ? (
+                    <User className="w-7 h-7" />
+                  ) : (
+                    <Building2 className="w-7 h-7" />
+                  )}
                 </div>
                 <div>
-                  <span className="text-[10px] text-slate-400">تلفن همراه دوم :</span>
-                  <p className="font-bold text-slate-750 dark:text-slate-300 font-mono dir-ltr text-right mt-1">{selectedPerson.phone2 || 'تنظیم نشده'}</p>
-                </div>
-                <div>
-                  <span className="text-[10px] text-slate-400">پست الکترونیکی :</span>
-                  <p className="text-xs text-slate-700 dark:text-slate-300 mt-1">{selectedPerson.email || 'تنظیم نشده'}</p>
-                </div>
-                <div>
-                  <span className="text-[10px] text-slate-400">وب‌سایت :</span>
-                  <p className="text-xs text-indigo-600 dark:text-indigo-400 mt-1 font-mono">{selectedPerson.website || 'تنظیم نشده'}</p>
+                  <h3 className="text-xl font-extrabold text-slate-800 dark:text-slate-100">{getFullName(selectedPerson)}</h3>
+                  <p className="text-xs text-indigo-500 font-mono mt-0.5">کد حسابداری کل: {selectedPerson.accounting_code}</p>
                 </div>
               </div>
 
-              {/* Box 2: Codes */}
-              <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 rounded-3xl p-5 space-y-4">
-                <h4 className="text-xs font-black text-slate-400 dark:text-slate-500 uppercase tracking-wider flex items-center gap-2 mb-2">
-                  <FileText className="w-4 h-4 text-indigo-500" />
-                  شناسه‌ها و کدهای ملی
-                </h4>
-                <div>
-                  <span className="text-[10px] text-slate-400">شناسه یا کد ملی :</span>
-                  <p className="font-bold text-slate-750 dark:text-slate-300 font-mono mt-1">{selectedPerson.national_id || 'تنظیم نشده'}</p>
-                </div>
-                {selectedPerson.type === 'حقوقی' && (
-                  <>
-                    <div>
-                      <span className="text-[10px] text-slate-400">کد اقتصادی :</span>
-                      <p className="font-bold text-slate-750 dark:text-slate-300 font-mono mt-1">{selectedPerson.economic_code || 'تنظیم نشده'}</p>
-                    </div>
-                    <div>
-                      <span className="text-[10px] text-slate-400">شماره ثبت :</span>
-                      <p className="font-bold text-slate-750 dark:text-slate-300 font-mono mt-1">{selectedPerson.registration_number || 'تنظیم نشده'}</p>
-                    </div>
-                  </>
-                )}
-                <div>
-                  <span className="text-[10px] text-slate-400">وضعیت گواهی ارزش افزوده :</span>
-                  <div className="flex items-center gap-2 mt-1">
-                    {selectedPerson.tax_registered ? (
-                      <span className="flex items-center gap-1.5 text-xs text-emerald-600 font-bold bg-emerald-50 dark:bg-emerald-950/20 px-3 py-1 rounded-full border border-emerald-100 dark:border-emerald-900/40">
-                        <CheckCircle className="w-3.5 h-3.5" />
-                        مشمول مالیات بر ارزش افزوده
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-805 px-3 py-1 rounded-full">
-                        <AlertCircle className="w-3.5 h-3.5" />
-                        غیرمشمول / عادی
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Box 3: Address */}
-              <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 rounded-3xl p-5 md:col-span-2 space-y-3">
-                <h4 className="text-xs font-black text-slate-400 dark:text-slate-500 uppercase tracking-wider flex items-center gap-2">
-                  <MapPin className="w-4 h-4 text-indigo-500" />
-                  آدرس و اطلاعات مکانی
-                </h4>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <span className="text-[10px] text-slate-400">شهر / استان :</span>
-                    <p className="text-xs font-bold text-slate-750 dark:text-slate-300 mt-1">{selectedPerson.city || 'تنظیم نشده'}</p>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-slate-400">کد پستی :</span>
-                    <p className="text-xs font-bold text-slate-750 dark:text-slate-300 font-mono mt-1">{selectedPerson.postal_code || 'تنظیم نشده'}</p>
-                  </div>
-                </div>
-                <div className="pt-2 border-t border-slate-200/50 dark:border-slate-800">
-                  <span className="text-[10px] text-slate-400">آدرس پستی تفصیلی :</span>
-                  <p className="text-xs text-slate-700 dark:text-slate-300 mt-1 leading-relaxed">{selectedPerson.address || 'هیچ نشانی پستی مکتوب فرار داده نشده است.'}</p>
-                </div>
-              </div>
-
-              {/* Box 4: Financial Info */}
-              <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 rounded-3xl p-5 md:col-span-2 space-y-4">
-                <h4 className="text-xs font-black text-slate-400 dark:text-slate-500 uppercase tracking-wider flex items-center gap-2">
-                  <CreditCard className="w-4 h-4 text-indigo-500" />
-                  اطلاعات حساب و اعتبارات بانکی
-                </h4>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <span className="text-[10px] text-slate-400">بانک عامل :</span>
-                    <p className="text-xs font-bold text-slate-750 dark:text-slate-300 mt-1">{selectedPerson.bank_name || 'تنظیم نشده'}</p>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-slate-400">شماره حساب :</span>
-                    <p className="text-xs font-bold text-slate-750 dark:text-slate-300 font-mono mt-1">{selectedPerson.bank_account || 'تنظیم نشده'}</p>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-slate-400">شماره کارت عابربانک :</span>
-                    <p className="text-xs font-bold text-slate-750 dark:text-slate-300 font-mono mt-1">{selectedPerson.bank_card || 'تنظیم نشده'}</p>
-                  </div>
-                </div>
-                <div className="pt-2 border-t border-slate-200/50 dark:border-slate-800">
-                  <span className="text-[10px] text-slate-400">شماره بین‌المللی شبا (IBAN) :</span>
-                  <p className="text-xs font-extrabold text-slate-750 dark:text-slate-300 font-mono tracking-widest mt-1 text-left dir-ltr">
-                    {selectedPerson.iban ? `IR-${selectedPerson.iban}` : 'تنظیم نشده'}
+              {/* Financial Summary Bento-Grid */}
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
+                {/* Total Sales */}
+                <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/60 rounded-2xl p-4 text-center">
+                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block mb-1">مجموع فروش</span>
+                  <p className="text-sm font-black text-indigo-600 dark:text-indigo-400 font-mono">
+                    {formatPersianCurrency(totalSales.toNumber())} <span className="text-[9px] font-bold">ریال</span>
                   </p>
                 </div>
-              </div>
-            </div>
 
-            {selectedPerson.description && (
-              <div className="mt-6 p-5 bg-amber-50/40 dark:bg-amber-950/10 border border-amber-100/30 dark:border-amber-900/20 rounded-3xl">
-                <span className="text-xs text-amber-600 font-bold block mb-1">توضیحات و یادداشت انبارداری :</span>
-                <p className="text-xs text-amber-800 dark:text-amber-200 leading-relaxed">{selectedPerson.description}</p>
+                {/* Total Purchases */}
+                <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/60 rounded-2xl p-4 text-center">
+                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block mb-1">مجموع خرید</span>
+                  <p className="text-sm font-black text-amber-600 dark:text-amber-400 font-mono">
+                    {formatPersianCurrency(totalPurchases.toNumber())} <span className="text-[9px] font-bold">ریال</span>
+                  </p>
+                </div>
+
+                {/* Total Received */}
+                <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/60 rounded-2xl p-4 text-center">
+                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block mb-1">مجموع دریافت</span>
+                  <p className="text-sm font-black text-emerald-600 dark:text-emerald-400 font-mono">
+                    {formatPersianCurrency(totalReceived.toNumber())} <span className="text-[9px] font-bold">ریال</span>
+                  </p>
+                </div>
+
+                {/* Total Paid */}
+                <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800/60 rounded-2xl p-4 text-center">
+                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block mb-1">مجموع پرداخت</span>
+                  <p className="text-sm font-black text-rose-600 dark:text-rose-400 font-mono">
+                    {formatPersianCurrency(totalPaid.toNumber())} <span className="text-[9px] font-bold">ریال</span>
+                  </p>
+                </div>
+
+                {/* Final Balance (Col-span-2 on mobile) */}
+                <div className={cn(
+                  "col-span-2 md:col-span-1 border rounded-2xl p-4 text-center",
+                  finalBalance.greaterThan(0)
+                    ? "bg-rose-50/50 border-rose-100 dark:bg-rose-950/5 dark:border-rose-900/30"
+                    : finalBalance.lessThan(0)
+                      ? "bg-emerald-50/50 border-emerald-100 dark:bg-emerald-950/5 dark:border-emerald-900/30"
+                      : "bg-slate-50 border-slate-150 dark:bg-slate-900/50 dark:border-slate-800"
+                )}>
+                  <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block mb-1">مانده نهایی</span>
+                  <p className={cn(
+                    "text-sm font-black font-mono",
+                    finalBalance.greaterThan(0)
+                      ? "text-rose-600 dark:text-rose-400"
+                      : finalBalance.lessThan(0)
+                        ? "text-emerald-600 dark:text-emerald-400"
+                        : "text-slate-650 dark:text-slate-350"
+                  )}>
+                    {formatPersianCurrency(Math.abs(finalBalance.toNumber()))} <span className="text-[9px] font-bold">ریال</span>
+                  </p>
+                  <span className={cn(
+                    "text-[8.5px] font-bold block mt-0.5",
+                    finalBalance.greaterThan(0) ? "text-rose-500" : finalBalance.lessThan(0) ? "text-emerald-500" : "text-slate-400"
+                  )}>
+                    {finalBalance.greaterThan(0) ? 'بدهکار' : finalBalance.lessThan(0) ? 'بستانکار' : 'تصفیه شده'}
+                  </span>
+                </div>
               </div>
-            )}
+
+              {/* Quick Action Buttons Grid */}
+              <div className="bg-slate-50 dark:bg-slate-800/20 border border-slate-150/40 dark:border-slate-850/40 rounded-2xl p-4 mb-6">
+                <span className="text-[10px] font-extrabold text-indigo-500 block mb-3">عملیات سریع پرونده شخص:</span>
+                <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+                  {/* Register Sale for Person */}
+                  <button
+                    onClick={() => {
+                      setIsDetailModalOpen(false);
+                      localStorage.setItem('preselected_customer_id', String(selectedPerson.id));
+                      navigate('/sales/new-invoice');
+                    }}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl py-2 px-2.5 flex items-center justify-center gap-1.5 transition-all text-[11px] font-bold cursor-pointer shadow-sm hover:scale-[1.02]"
+                  >
+                    <ShoppingCart className="w-3.5 h-3.5 shrink-0" />
+                    <span>ثبت فروش جدید</span>
+                  </button>
+
+                  {/* Register Purchase for Person */}
+                  <button
+                    onClick={() => {
+                      setIsDetailModalOpen(false);
+                      localStorage.setItem('preselected_supplier_name', `${selectedPerson.first_name || ''} ${selectedPerson.last_name || ''} (${selectedPerson.nickname || ''})`.trim());
+                      navigate('/inventory/control');
+                    }}
+                    className="bg-amber-600 hover:bg-amber-700 text-white rounded-xl py-2 px-2.5 flex items-center justify-center gap-1.5 transition-all text-[11px] font-bold cursor-pointer shadow-sm hover:scale-[1.02]"
+                  >
+                    <ShoppingBag className="w-3.5 h-3.5 shrink-0" />
+                    <span>ثبت خرید جدید</span>
+                  </button>
+
+                  {/* Register Receipt */}
+                  <button
+                    onClick={() => {
+                      setShowQuickTxModal('received');
+                      setQuickTxForm({
+                        amount: '',
+                        date: getTodayShamsi(),
+                        description: `دریافت نقدی بابت تسویه حساب ${getFullName(selectedPerson)}`
+                      });
+                    }}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl py-2 px-2.5 flex items-center justify-center gap-1.5 transition-all text-[11px] font-bold cursor-pointer shadow-sm hover:scale-[1.02]"
+                  >
+                    <ArrowDownLeft className="w-3.5 h-3.5 shrink-0" />
+                    <span>ثبت دریافت وجه</span>
+                  </button>
+
+                  {/* Register Payment */}
+                  <button
+                    onClick={() => {
+                      setShowQuickTxModal('paid');
+                      setQuickTxForm({
+                        amount: '',
+                        date: getTodayShamsi(),
+                        description: `پرداخت نقدی به حساب ${getFullName(selectedPerson)}`
+                      });
+                    }}
+                    className="bg-rose-600 hover:bg-rose-700 text-white rounded-xl py-2 px-2.5 flex items-center justify-center gap-1.5 transition-all text-[11px] font-bold cursor-pointer shadow-sm hover:scale-[1.02]"
+                  >
+                    <ArrowUpRight className="w-3.5 h-3.5 shrink-0" />
+                    <span>ثبت پرداخت وجه</span>
+                  </button>
+
+                  {/* View Invoices */}
+                  <button
+                    onClick={() => {
+                      setIsDetailModalOpen(false);
+                      localStorage.setItem('sales_history_search', getFullName(selectedPerson));
+                      navigate('/sales/history');
+                    }}
+                    className="bg-slate-500 hover:bg-slate-600 text-white rounded-xl py-2 px-2.5 flex items-center justify-center gap-1.5 transition-all text-[11px] font-bold cursor-pointer shadow-sm hover:scale-[1.02]"
+                  >
+                    <Eye className="w-3.5 h-3.5 shrink-0" />
+                    <span>مشاهده فاکتورها</span>
+                  </button>
+
+                  {/* Print Account file */}
+                  <button
+                    onClick={handlePrintStatement}
+                    className="bg-violet-600 hover:bg-violet-700 text-white rounded-xl py-2 px-2.5 flex items-center justify-center gap-1.5 transition-all text-[11px] font-bold cursor-pointer shadow-sm hover:scale-[1.02]"
+                  >
+                    <Printer className="w-3.5 h-3.5 shrink-0" />
+                    <span>چاپ پرونده حساب</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Tab Navigation buttons */}
+              <div className="flex border-b border-slate-150 dark:border-slate-800 mb-6 overflow-x-auto scrollbar-none gap-2">
+                {[
+                  { id: 'info', name: 'اطلاعات شخص', icon: User },
+                  { id: 'ledger', name: 'گردش حساب', icon: Activity },
+                  { id: 'sales', name: 'فاکتورهای فروش', icon: FileText },
+                  { id: 'purchases', name: 'فاکتورهای خرید', icon: ShoppingBag },
+                  { id: 'tx', name: 'دریافت و پرداخت', icon: CreditCard },
+                  { id: 'notes', name: 'یادداشت‌ها', icon: FileEdit },
+                ].map(tab => {
+                  const IconComponent = tab.icon;
+                  const isActive = detailActiveTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      onClick={() => setDetailActiveTab(tab.id as any)}
+                      className={cn(
+                        "flex items-center gap-2 px-4 py-3 text-xs font-bold transition-all border-b-2 whitespace-nowrap cursor-pointer",
+                        isActive 
+                          ? "border-indigo-650 text-indigo-600 dark:border-indigo-500 dark:text-indigo-400" 
+                          : "border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                      )}
+                    >
+                      <IconComponent className="w-4 h-4 shrink-0" />
+                      <span>{tab.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Tab Contents */}
+              <div className="min-h-[300px]">
+                
+                {/* 1. Person Information Tab */}
+                {detailActiveTab === 'info' && (
+                  <div className="space-y-6 animate-in fade-in duration-200 text-right">
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      
+                      {/* Identity & Contact Details */}
+                      <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 space-y-4">
+                        <h4 className="text-xs font-black text-slate-450 dark:text-slate-500 uppercase tracking-wider flex items-center gap-2 mb-2 pb-2 border-b">
+                          <Phone className="w-4 h-4 text-indigo-500" />
+                          اطلاعات هویتی و ارتباطی
+                        </h4>
+                        
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <span className="text-[10px] text-slate-400 block">نوع حقوقی :</span>
+                            <p className="text-xs font-bold text-slate-700 dark:text-slate-350 mt-1">{selectedPerson.type}</p>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 block">کد یا شناسه ملی :</span>
+                            <p className="text-xs font-bold text-slate-700 dark:text-slate-350 font-mono mt-1">{selectedPerson.national_id || 'تنظیم نشده'}</p>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-3 pt-2">
+                          <div>
+                            <span className="text-[10px] text-slate-400 block">تلفن همراه اصلی :</span>
+                            <p className="text-xs font-bold text-slate-750 dark:text-slate-300 font-mono dir-ltr text-right mt-1">{selectedPerson.phone1 || 'تنظیم نشده'}</p>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 block">موبایل دوم :</span>
+                            <p className="text-xs font-bold text-slate-750 dark:text-slate-300 font-mono dir-ltr text-right mt-1">{selectedPerson.phone3 || 'تنظیم نشده'}</p>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 block">تلفن ثابت دوم :</span>
+                            <p className="text-xs font-bold text-slate-750 dark:text-slate-300 font-mono dir-ltr text-right mt-1">{selectedPerson.phone2 || 'تنظیم نشده'}</p>
+                          </div>
+                        </div>
+
+                        <div className="pt-2">
+                          <span className="text-[10px] text-slate-400 block">پست الکترونیکی :</span>
+                          <p className="text-xs text-slate-700 dark:text-slate-300 mt-1 truncate font-mono">{selectedPerson.email || 'تنظیم نشده'}</p>
+                        </div>
+                      </div>
+
+                      {/* Business & Commercial Details */}
+                      <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 space-y-4">
+                        <h4 className="text-xs font-black text-slate-450 dark:text-slate-500 uppercase tracking-wider flex items-center gap-2 mb-2 pb-2 border-b">
+                          <Briefcase className="w-4 h-4 text-indigo-500" />
+                          مشخصات و اطلاعات تجاری کسب‌وکار
+                        </h4>
+                        
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <span className="text-[10px] text-slate-400 block">نام کسب و کار / برند :</span>
+                            <p className="text-xs font-bold text-slate-700 dark:text-slate-350 mt-1">{selectedPerson.business_name || 'تنظیم نشده'}</p>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 block">نوع فعالیت / رسته :</span>
+                            <p className="text-xs font-bold text-slate-700 dark:text-slate-350 mt-1">{selectedPerson.business_activity || 'تنظیم نشده'}</p>
+                          </div>
+                        </div>
+
+                        <div className="pt-2">
+                          <span className="text-[10px] text-slate-400 block">نشانی محل کار / دفتر مرکزی :</span>
+                          <p className="text-xs text-slate-700 dark:text-slate-300 mt-1 leading-relaxed">{selectedPerson.business_address || 'هیچ آدرس پستی برای محل کار ثبت نگردیده است.'}</p>
+                        </div>
+                      </div>
+
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      
+                      {/* Bank & Financial Information */}
+                      <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 space-y-4">
+                        <h4 className="text-xs font-black text-slate-450 dark:text-slate-500 uppercase tracking-wider flex items-center gap-2 mb-2 pb-2 border-b">
+                          <CreditCard className="w-4 h-4 text-indigo-500" />
+                          جزئیات حساب بانکی و اعتبار خرید
+                        </h4>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <span className="text-[10px] text-slate-400 block">بانک عامل :</span>
+                            <p className="text-xs font-bold text-slate-700 dark:text-slate-350 mt-1">{selectedPerson.bank_name || 'تنظیم نشده'}</p>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 block">سقف اعتبار تجاری :</span>
+                            <p className="text-xs font-bold text-indigo-600 dark:text-indigo-400 font-mono mt-1">
+                              {selectedPerson.credit_limit ? `${formatPersianCurrency(selectedPerson.credit_limit)} ریال` : 'نامحدود'}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4 pt-2">
+                          <div>
+                            <span className="text-[10px] text-slate-400 block">شماره کارت عابر بانک :</span>
+                            <p className="text-xs font-bold text-slate-700 dark:text-slate-300 font-mono mt-1">{selectedPerson.bank_card || 'تنظیم نشده'}</p>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 block">شماره حساب بانکی :</span>
+                            <p className="text-xs font-bold text-slate-700 dark:text-slate-350 font-mono mt-1">{selectedPerson.bank_account || 'تنظیم نشده'}</p>
+                          </div>
+                        </div>
+
+                        <div className="pt-2">
+                          <span className="text-[10px] text-slate-400 block">شماره شبا بین‌المللی (IBAN) :</span>
+                          <p className="text-xs font-bold text-slate-700 dark:text-slate-300 font-mono text-left dir-ltr mt-1">
+                            {selectedPerson.iban ? `IR-${selectedPerson.iban}` : 'تنظیم نشده'}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Location and Residence details */}
+                      <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 space-y-4">
+                        <h4 className="text-xs font-black text-slate-450 dark:text-slate-500 uppercase tracking-wider flex items-center gap-2 mb-2 pb-2 border-b">
+                          <MapPin className="w-4 h-4 text-indigo-500" />
+                          موقعیت پستی و محل سکونت
+                        </h4>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <span className="text-[10px] text-slate-400 block">منطقه / شهر / استان :</span>
+                            <p className="text-xs font-bold text-slate-700 dark:text-slate-350 mt-1">{selectedPerson.city || 'تنظیم نشده'}</p>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-400 block">کد پستی ۱۰ رقمی :</span>
+                            <p className="text-xs font-bold text-slate-700 dark:text-slate-350 font-mono mt-1">{selectedPerson.postal_code || 'تنظیم نشده'}</p>
+                          </div>
+                        </div>
+
+                        <div className="pt-2">
+                          <span className="text-[10px] text-slate-400 block">نشانی تفصیلی پستی سکونت :</span>
+                          <p className="text-xs text-slate-700 dark:text-slate-300 mt-1 leading-relaxed">{selectedPerson.address || 'هیچ آدرس تفصیلی سکونتی برای این شخص مکتوب نشده است.'}</p>
+                        </div>
+                      </div>
+
+                    </div>
+
+                    <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 rounded-3xl p-6">
+                      <span className="text-xs text-indigo-500 font-bold block mb-1">یادداشت اداری / توضیحات سیستمی اضافه :</span>
+                      <p className="text-xs text-slate-750 dark:text-slate-300 leading-relaxed">{selectedPerson.description || 'توضیحات تکمیلی بیشتری برای این شخص در پرونده درج نشده است.'}</p>
+                    </div>
+
+                    <div className="flex justify-end gap-3 pt-4">
+                      <button
+                        onClick={() => {
+                          setIsDetailModalOpen(false);
+                          handleEditClick(selectedPerson);
+                        }}
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl py-2 px-6 flex items-center gap-1.5 transition-all text-xs font-bold cursor-pointer"
+                      >
+                        <Edit className="w-4 h-4" />
+                        <span>ویرایش اطلاعات پرونده</span>
+                      </button>
+                    </div>
+
+                  </div>
+                )}
+
+                {/* 2. Account Circulation / Ledger Tab */}
+                {detailActiveTab === 'ledger' && (
+                  <div className="space-y-4 animate-in fade-in duration-200">
+                    <div className="flex justify-between items-center mb-1">
+                      <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase flex items-center gap-1.5">
+                        <Activity className="w-4 h-4 text-indigo-500" />
+                        گردش حساب و دفتر معین تفصیلی
+                      </h4>
+                    </div>
+
+                    {isLoadingDetails ? (
+                      <div className="flex flex-col items-center justify-center py-12 text-slate-400">
+                        <div className="w-8 h-8 rounded-full border-2 border-indigo-550 border-t-transparent animate-spin mb-3" />
+                        <span className="text-[11px] font-bold">در حال بارگذاری تراکنش‌ها و اسناد مالی...</span>
+                      </div>
+                    ) : (
+                      <div className="border border-slate-100 dark:border-slate-800 rounded-2xl overflow-hidden">
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-right text-xs">
+                            <thead>
+                              <tr className="bg-slate-50 dark:bg-slate-950/40 text-slate-400 font-extrabold border-b border-slate-100 dark:border-slate-800">
+                                <th className="p-3">تاریخ</th>
+                                <th className="p-3">نوع عملیات</th>
+                                <th className="p-3">شرح</th>
+                                <th className="p-3 text-left">بدهکار</th>
+                                <th className="p-3 text-left">بستانکار</th>
+                                <th className="p-3 text-left">مانده</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-medium text-slate-750 dark:text-slate-300">
+                              {getLedgerStatement().length === 0 ? (
+                                <tr>
+                                  <td colSpan={6} className="p-10 text-center text-slate-400 text-[11px] font-semibold leading-relaxed">
+                                    هیچ فاکتور فروش معلق یا سند معین دریافت و پرداختی در سیستم برای این شخص ثبت نشده است.
+                                  </td>
+                                </tr>
+                              ) : (
+                                getLedgerStatement().map((row) => {
+                                  const isPositive = row.runningBalance > 0;
+                                  const isNegative = row.runningBalance < 0;
+                                  return (
+                                    <tr key={row.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-950/10">
+                                      <td className="p-3 font-mono text-slate-400 font-bold text-[10.5px]">
+                                        {toPersianDigits(row.date)}
+                                      </td>
+                                      <td className="p-3">
+                                        <span className={cn(
+                                          "px-2 py-0.5 rounded-md text-[9px] font-extrabold",
+                                          row.type === 'فاکتور فروش' 
+                                            ? "bg-rose-50 text-rose-600 dark:bg-rose-950/20 dark:text-rose-450" 
+                                            : row.type === 'دریافت وجه' 
+                                              ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/20 dark:text-emerald-450" 
+                                              : "bg-amber-50 text-amber-600 dark:bg-amber-950/20 dark:text-amber-450"
+                                        )}>
+                                          {row.type}
+                                        </span>
+                                      </td>
+                                      <td className="p-3 text-slate-700 dark:text-slate-300 font-bold truncate max-w-[180px]">
+                                        {row.description}
+                                      </td>
+                                      <td className="p-3 text-left font-black text-slate-700 dark:text-slate-200 font-mono">
+                                        {row.debit > 0 ? `${formatPersianCurrency(row.debit)}` : '-'}
+                                      </td>
+                                      <td className="p-3 text-left font-black text-slate-700 dark:text-slate-200 font-mono">
+                                        {row.credit > 0 ? `${formatPersianCurrency(row.credit)}` : '-'}
+                                      </td>
+                                      <td className={cn(
+                                        "p-3 text-left font-black font-mono",
+                                        isPositive 
+                                          ? "text-rose-600 dark:text-rose-400" 
+                                          : isNegative 
+                                            ? "text-emerald-600 dark:text-emerald-400" 
+                                            : "text-slate-400 dark:text-slate-500"
+                                      )}>
+                                        {row.runningBalance !== 0 ? (
+                                          <span>
+                                            {formatPersianCurrency(Math.abs(row.runningBalance))}
+                                            <span className="text-[8.5px] font-extrabold mr-1">
+                                              {isPositive ? 'بدهکار' : 'بستانکار'}
+                                            </span>
+                                          </span>
+                                        ) : 'تصفیه'}
+                                      </td>
+                                    </tr>
+                                  );
+                                })
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 3. Sales Invoices Tab */}
+                {detailActiveTab === 'sales' && (
+                  <div className="space-y-4 animate-in fade-in duration-200 text-right">
+                    <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase flex items-center gap-1.5 mb-2">
+                      <FileText className="w-4 h-4 text-indigo-500" />
+                      لیست فاکتورهای فروش ثبت شده
+                    </h4>
+
+                    {personInvoices.length === 0 ? (
+                      <div className="p-12 text-center text-slate-400 text-xs border border-dashed rounded-2xl">هیچ فاکتور فروشی برای این شخص ثبت نشده است.</div>
+                    ) : (
+                      <div className="overflow-x-auto border border-slate-150 dark:border-slate-800 rounded-2xl">
+                        <table className="w-full text-right text-xs">
+                          <thead className="bg-slate-50 dark:bg-slate-950/40 text-slate-400 font-extrabold border-b border-slate-100 dark:border-slate-800">
+                            <tr>
+                              <th className="p-3">شماره فاکتور</th>
+                              <th className="p-3">تاریخ فاکتور</th>
+                              <th className="p-3 text-left">مبلغ کل (ریال)</th>
+                              <th className="p-3 text-center">وضعیت پرداخت</th>
+                              <th className="p-3 text-center">عملیات</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-medium">
+                            {personInvoices.map(inv => (
+                              <tr key={inv.id} className="hover:bg-slate-50/40 dark:hover:bg-slate-950/10">
+                                <td className="p-3 font-mono font-bold text-slate-700 dark:text-slate-300">
+                                  {toPersianDigits(inv.invoice_number)}
+                                </td>
+                                <td className="p-3 font-mono text-slate-400 font-bold">
+                                  {toPersianDigits(inv.date || inv.created_at?.split('T')[0] || '')}
+                                </td>
+                                <td className="p-3 text-left font-black text-slate-700 dark:text-slate-200 font-mono">
+                                  {formatPersianCurrency(inv.final_amount || 0)}
+                                </td>
+                                <td className="p-3 text-center">
+                                  <span className={cn(
+                                    "px-2.5 py-1 rounded-full text-[10px] font-bold inline-block",
+                                    inv.status === 'پرداخت شده'
+                                      ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/25 dark:text-emerald-400"
+                                      : inv.status === 'لغو شده'
+                                        ? "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-450"
+                                        : "bg-amber-50 text-amber-600 dark:bg-amber-950/25 dark:text-amber-450"
+                                  )}>
+                                    {inv.status}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-center">
+                                  <button
+                                    onClick={() => {
+                                      setIsDetailModalOpen(false);
+                                      localStorage.setItem('sales_history_search', inv.invoice_number);
+                                      navigate('/sales/history');
+                                    }}
+                                    className="bg-indigo-50 hover:bg-indigo-100 text-indigo-600 dark:bg-indigo-950/40 dark:hover:bg-indigo-950/60 dark:text-indigo-400 px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all cursor-pointer inline-flex items-center gap-1"
+                                  >
+                                    <Eye className="w-3.5 h-3.5" />
+                                    <span>مشاهده فاکتور</span>
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* 4. Purchase Invoices Tab */}
+                {detailActiveTab === 'purchases' && (
+                  <div className="space-y-4 animate-in fade-in duration-200 text-right">
+                    <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase flex items-center gap-1.5 mb-2">
+                      <ShoppingBag className="w-4 h-4 text-indigo-500" />
+                      فاکتورهای خرید کالا / اسناد ورودی
+                    </h4>
+                    
+                    <div className="flex flex-col items-center justify-center py-12 text-slate-400 border border-dashed rounded-2xl">
+                      <ShoppingBag className="w-12 h-12 text-slate-300 dark:text-slate-700 mb-3" />
+                      <span className="text-[11px] font-bold text-slate-400 dark:text-slate-500">هیچ فاکتور خریدی در سیستم برای این شخص پیدا نشد.</span>
+                      <p className="text-[10px] text-slate-400 mt-1 max-w-xs text-center leading-relaxed">
+                        کلیه معاملات با این شخص در سیستم دایتکث در ردیف فاکتورهای فروش ثبت گردیده‌اند.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* 5. Receipts and Payments (دریافت و پرداخت) Tab */}
+                {detailActiveTab === 'tx' && (
+                  <div className="space-y-6 animate-in fade-in duration-200 text-right">
+                    
+                    <div className="flex justify-between items-center mb-1">
+                      <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase flex items-center gap-1.5">
+                        <CreditCard className="w-4 h-4 text-indigo-500" />
+                        اسناد دریافت و پرداخت وجوه
+                      </h4>
+                    </div>
+
+                    {/* Quick Register Vouchers */}
+                    <div className="bg-slate-50 dark:bg-slate-800/20 border border-slate-150/45 dark:border-slate-850/40 rounded-2xl p-4">
+                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block mb-2">ثبت سریع سند مالی جدید:</span>
+                      <div className="flex flex-wrap gap-3">
+                        {/* Register Receipt */}
+                        <button
+                          onClick={() => {
+                            setShowQuickTxModal('received');
+                            setQuickTxForm({
+                              amount: '',
+                              date: getTodayShamsi(),
+                              description: `دریافت نقدی بابت تسویه حساب ${getFullName(selectedPerson)}`
+                            });
+                          }}
+                          className="bg-emerald-650 hover:bg-emerald-700 text-white rounded-xl py-2.5 px-4 flex items-center gap-2 transition-all text-xs font-bold shadow-sm cursor-pointer"
+                        >
+                          <Plus className="w-4 h-4" />
+                          <span>ثبت دریافت وجه (بستانکار کردن شخص)</span>
+                        </button>
+
+                        {/* Register Payment */}
+                        <button
+                          onClick={() => {
+                            setShowQuickTxModal('paid');
+                            setQuickTxForm({
+                              amount: '',
+                              date: getTodayShamsi(),
+                              description: `پرداخت نقدی به حساب ${getFullName(selectedPerson)}`
+                            });
+                          }}
+                          className="bg-rose-650 hover:bg-rose-700 text-white rounded-xl py-2.5 px-4 flex items-center gap-2 transition-all text-xs font-bold shadow-sm cursor-pointer"
+                        >
+                          <Plus className="w-4 h-4" />
+                          <span>ثبت پرداخت وجه (بدهکار کردن شخص)</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Receipts and Payments History */}
+                    {financialTransactions.length === 0 ? (
+                      <div className="p-12 text-center text-slate-400 text-xs border border-dashed rounded-2xl">هیچ سند دریافت و پرداخت نقدی برای این شخص ثبت نشده است.</div>
+                    ) : (
+                      <div className="overflow-x-auto border border-slate-150 dark:border-slate-800 rounded-2xl">
+                        <table className="w-full text-right text-xs">
+                          <thead className="bg-slate-50 dark:bg-slate-950/40 text-slate-400 font-extrabold border-b border-slate-100 dark:border-slate-800">
+                            <tr>
+                              <th className="p-3">شناسه سند</th>
+                              <th className="p-3">تاریخ ثبت</th>
+                              <th className="p-3 font-bold">نوع تراکنش</th>
+                              <th className="p-3">توضیحات و شرح</th>
+                              <th className="p-3 text-left">مبلغ (ریال)</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-medium">
+                            {financialTransactions.map(tx => (
+                              <tr key={tx.id} className="hover:bg-slate-50/40 dark:hover:bg-slate-950/10">
+                                <td className="p-3 font-mono text-slate-400 font-bold">
+                                  {toPersianDigits(tx.id)}
+                                </td>
+                                <td className="p-3 font-mono text-slate-400 font-bold">
+                                  {toPersianDigits(tx.date)}
+                                </td>
+                                <td className="p-3 font-bold">
+                                  <span className={cn(
+                                    "px-2 py-0.5 rounded-md text-[9px] font-extrabold",
+                                    tx.type === 'received' || tx.amount < 0
+                                      ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/20 dark:text-emerald-450"
+                                      : "bg-rose-50 text-rose-600 dark:bg-rose-950/20 dark:text-rose-450"
+                                  )}>
+                                    {tx.type === 'received' || tx.amount < 0 ? 'دریافت وجه' : 'پرداخت وجه'}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-slate-700 dark:text-slate-350 max-w-xs truncate">
+                                  {tx.description}
+                                </td>
+                                <td className="p-3 text-left font-black text-slate-700 dark:text-slate-200 font-mono">
+                                  {formatPersianCurrency(Math.abs(tx.amount))}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                  </div>
+                )}
+
+                {/* 6. Notes Tab */}
+                {detailActiveTab === 'notes' && (
+                  <div className="space-y-6 animate-in fade-in duration-200 text-right">
+                    
+                    {/* Add note form */}
+                    <form onSubmit={handleAddNoteSubmit} className="bg-slate-50 dark:bg-slate-800/20 border border-slate-150/45 dark:border-slate-850/40 rounded-3xl p-5 space-y-4">
+                      <h4 className="text-xs font-bold text-slate-700 dark:text-slate-350 flex items-center gap-1.5 pb-2 border-b border-slate-200/50 dark:border-slate-800">
+                        <FileEdit className="w-4 h-4 text-indigo-500" />
+                        ثبت یادداشت یا پیگیری جدید برای مشتری
+                      </h4>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="md:col-span-2">
+                          <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 mb-1">توضیحات و خلاصه گفتگو یا پیگیری:</label>
+                          <textarea
+                            required
+                            value={noteForm.description}
+                            onChange={(e) => setNoteForm(prev => ({ ...prev, description: e.target.value }))}
+                            placeholder="شرح گفتگو، تعهد مالی یا اطلاعات پیگیری دیگر را بنویسید..."
+                            rows={2}
+                            className="w-full px-4 py-2 text-xs border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 rounded-xl focus:ring-1 focus:ring-indigo-500 outline-none text-slate-800 dark:text-slate-100"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 mb-1">تاریخ پیگیری بعدی:</label>
+                          <JalaliDatePicker
+                            value={noteForm.followup_date || getTodayShamsi()}
+                            onChange={(val) => setNoteForm(prev => ({ ...prev, followup_date: val }))}
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-500 dark:text-slate-400 mb-1">یادآوری (سیستمی):</label>
+                          <div className="flex bg-slate-200/50 dark:bg-slate-950/50 p-1 rounded-xl w-full">
+                            {['بله', 'خیر'].map(opt => (
+                              <button
+                                key={opt}
+                                type="button"
+                                onClick={() => setNoteForm(prev => ({ ...prev, reminder: opt }))}
+                                className={cn(
+                                  "flex-1 py-1.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer", 
+                                  noteForm.reminder === opt 
+                                    ? "bg-indigo-600 text-white shadow-sm" 
+                                    : "text-slate-500"
+                                )}
+                              >
+                                {opt}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex justify-end pt-2 border-t border-slate-150/45 dark:border-slate-800">
+                        <button
+                          type="submit"
+                          className="bg-indigo-650 hover:bg-indigo-700 text-white rounded-xl py-2 px-5 flex items-center gap-1.5 transition-all text-xs font-bold cursor-pointer"
+                        >
+                          <Plus className="w-4 h-4" />
+                          <span>ثبت یادداشت</span>
+                        </button>
+                      </div>
+                    </form>
+
+                    {/* Notes List */}
+                    <div className="space-y-4 text-right">
+                      <h4 className="text-xs font-bold text-slate-700 dark:text-slate-350 flex items-center gap-1.5 pb-1 border-b">
+                        تاریخچه یادداشت‌ها و پیگیری‌ها ({toPersianDigits(personNotes.length)})
+                      </h4>
+                      {personNotes.length === 0 ? (
+                        <div className="p-8 text-center text-slate-400 text-xs border border-dashed rounded-2xl">هیچ یادداشتی برای این شخص ثبت نشده است.</div>
+                      ) : (
+                        <div className="grid grid-cols-1 gap-3">
+                          {personNotes.map(note => (
+                            <div key={note.id} className="bg-white dark:bg-slate-900 border border-slate-150/70 dark:border-slate-850 p-4 rounded-2xl flex justify-between items-start gap-4 shadow-sm">
+                              <div className="space-y-2 text-right">
+                                <p className="text-xs font-medium text-slate-800 dark:text-slate-200 leading-relaxed whitespace-pre-line">
+                                  {note.description}
+                                </p>
+                                <div className="flex flex-wrap items-center gap-3 text-[10px] text-slate-450 dark:text-slate-500">
+                                  <span className="flex items-center gap-1 bg-slate-50 dark:bg-slate-950/40 px-2 py-0.5 rounded-md font-mono">
+                                    پیگیری: {toPersianDigits(note.followup_date)}
+                                  </span>
+                                  {note.reminder === 'بله' && (
+                                    <span className="bg-rose-50 text-rose-600 dark:bg-rose-950/35 dark:text-rose-450 px-2 py-0.5 rounded-md font-extrabold flex items-center gap-1">
+                                      <AlertCircle className="w-3 h-3" />
+                                      نیازمند یادآوری
+                                    </span>
+                                  )}
+                                  <span className="text-slate-400">
+                                    ثبت‌شده در: {toPersianDigits(note.created_at?.split(' ')[0] || getTodayShamsi())}
+                                  </span>
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => handleDeleteNote(note.id)}
+                                className="text-slate-400 hover:text-rose-650 p-1.5 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-lg transition-all cursor-pointer shrink-0"
+                                title="حذف یادداشت"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                  </div>
+                )}
+
+              </div>
+
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* --- Inline Quick Transaction Modal --- */}
+      {showQuickTxModal && selectedPerson && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-md p-4 animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4 text-right">
+            <h3 className="font-extrabold text-sm text-slate-800 dark:text-white flex items-center gap-1.5 pb-2 border-b">
+              {showQuickTxModal === 'received' ? 'ثبت دریافت وجه (بستانکار)' : 'ثبت پرداخت وجه (بدهکار)'}
+            </h3>
+            
+            <form onSubmit={handleQuickTxSubmit} className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-extrabold text-slate-400 mb-1.5">مبلغ سند مالی (ریال):</label>
+                <input
+                  type="number"
+                  required
+                  value={quickTxForm.amount}
+                  onChange={(e) => setQuickTxForm(prev => ({ ...prev, amount: e.target.value }))}
+                  placeholder="مبلغ به ریال"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-xs text-left font-bold focus:ring-1 focus:ring-indigo-500 outline-none"
+                />
+              </div>
+
+              <JalaliDatePicker
+                value={quickTxForm.date || getTodayShamsi()}
+                onChange={(val) => setQuickTxForm(prev => ({ ...prev, date: val }))}
+                label="تاریخ ثبت سند مالی (شمسی):"
+              />
+
+              <div>
+                <label className="block text-[10px] font-extrabold text-slate-400 mb-1.5">شرح تفصیلی سند:</label>
+                <textarea
+                  required
+                  value={quickTxForm.description}
+                  onChange={(e) => setQuickTxForm(prev => ({ ...prev, description: e.target.value }))}
+                  placeholder={showQuickTxModal === 'received' ? 'مثال: تصفیه نقدی بخشی از مانده بدهی فاکتورها' : 'مثال: پرداخت علی‌الحساب بابت خرید کالا'}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-xs h-16 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="submit"
+                  className="flex-1 py-2 bg-indigo-650 hover:bg-indigo-750 text-white rounded-xl text-xs font-black transition-all cursor-pointer"
+                >
+                  ثبت نهایی سند مالی
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowQuickTxModal(null);
+                    setQuickTxForm({ amount: '', date: '', description: '' });
+                  }}
+                  className="flex-1 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-350 rounded-xl text-xs font-black transition-all cursor-pointer"
+                >
+                  انصراف
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
@@ -931,9 +2194,15 @@ export default function PersonList() {
                     <label className="block text-xs text-slate-500 mb-1">شماره تلفن همراه (اصلی)</label>
                     <input type="text" name="phone1" value={editForm.phone1 || ''} onChange={handleEditChange} className="w-full px-4 py-2 border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none font-mono dir-ltr text-right dark:text-slate-100 text-sm" />
                   </div>
-                  <div>
-                    <label className="block text-xs text-slate-500 mb-1">شماره تلفن ثابت دوم</label>
-                    <input type="text" name="phone2" value={editForm.phone2 || ''} onChange={handleEditChange} className="w-full px-4 py-2 border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none font-mono dir-ltr text-right dark:text-slate-100 text-sm" />
+                  <div className="flex gap-4">
+                    <div className="flex-1">
+                      <label className="block text-xs text-slate-500 mb-1">موبایل دوم</label>
+                      <input type="text" name="phone3" value={editForm.phone3 || ''} onChange={handleEditChange} className="w-full px-4 py-2 border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none font-mono dir-ltr text-right dark:text-slate-100 text-sm" />
+                    </div>
+                    <div className="flex-1">
+                      <label className="block text-xs text-slate-500 mb-1">تلفن ثابت دوم</label>
+                      <input type="text" name="phone2" value={editForm.phone2 || ''} onChange={handleEditChange} className="w-full px-4 py-2 border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none font-mono dir-ltr text-right dark:text-slate-100 text-sm" />
+                    </div>
                   </div>
                   <div>
                     <label className="block text-xs text-slate-500 mb-1">آدرس ایمیل ارتباطی</label>
@@ -956,6 +2225,25 @@ export default function PersonList() {
                   <div>
                     <label className="block text-xs text-slate-500 mb-1">آدرس دقیق پستی</label>
                     <textarea name="address" value={editForm.address || ''} onChange={handleEditChange} rows={3} className="w-full p-4 border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none dark:text-slate-100 resize-none text-xs leading-relaxed" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Commercial Details */}
+              <div className="bg-indigo-50/20 dark:bg-slate-850/10 p-6 rounded-3xl space-y-4 border border-indigo-100/50 dark:border-slate-800">
+                <h4 className="text-sm font-bold text-slate-700 dark:text-slate-350 pb-2 border-b border-indigo-100/40 dark:border-slate-800">اطلاعات تجاری و کسب‌وکار</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">نام کسب و کار / فروشگاه</label>
+                    <input type="text" name="business_name" value={editForm.business_name || ''} onChange={handleEditChange} className="w-full px-4 py-2 border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none dark:text-slate-100 text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">نوع فعالیت / رسته شغلی</label>
+                    <input type="text" name="business_activity" value={editForm.business_activity || ''} onChange={handleEditChange} className="w-full px-4 py-2 border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none dark:text-slate-100 text-sm" />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-xs text-slate-500 mb-1">آدرس محل کار / دفتر تجاری</label>
+                    <textarea name="business_address" value={editForm.business_address || ''} onChange={handleEditChange} rows={2} className="w-full p-4 border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 focus:ring-2 focus:ring-indigo-500 outline-none dark:text-slate-100 resize-none text-xs leading-relaxed" />
                   </div>
                 </div>
               </div>

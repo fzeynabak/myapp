@@ -37,6 +37,18 @@ export interface Person {
   avatar?: string;
   created_at?: string;
   updated_at?: string;
+  business_name?: string;
+  business_activity?: string;
+  business_address?: string;
+}
+
+export interface PersonNote {
+  id: number;
+  person_id: number;
+  description: string;
+  followup_date?: string;
+  reminder?: string;
+  created_at?: string;
 }
 
 export interface Shareholder {
@@ -90,6 +102,7 @@ declare global {
       addItem: (name: string) => Promise<number>;
       getItems: () => Promise<{id: number, name: string, created_at: string}[]>;
       getDbStats?: () => Promise<any>;
+      getDashboardData?: () => Promise<any>;
       windowControl?: (command: string) => void;
       changeDbPath?: () => Promise<{ success: boolean; path?: string; error?: string }>;
       getConfig?: () => Promise<any>;
@@ -150,6 +163,11 @@ declare global {
       saveWarehouse?: (data: any) => Promise<{ success: boolean; id: number }>;
       deleteWarehouse?: (id: number) => Promise<{ success: boolean }>;
       getWarehouseStocks?: (warehouseId: number) => Promise<WarehouseStock[]>;
+      getInventoryHistory?: () => Promise<any[]>;
+      addWarehouseTransaction?: (data: any) => Promise<{ success: boolean; error?: string }>;
+      getProductSalesHistory?: (productId: number) => Promise<any[]>;
+      getProductPurchaseHistory?: (productId: number) => Promise<any[]>;
+      getProductInventoryCirculation?: (productId: number) => Promise<any[]>;
 
        // Price updates & Audit trail API
       applyPriceUpdate?: (data: any) => Promise<{ success: boolean; id: number }>;
@@ -158,9 +176,34 @@ declare global {
       rollbackPriceUpdate?: (updateId: number) => Promise<{ success: boolean }>;
 
       // Invoices & Sales API
-      saveInvoice?: (data: any) => Promise<{ success: boolean; id?: number; error?: string }>;
+      saveInvoice?: (data: any) => Promise<{ success: boolean; id?: number; error?: string; invoice_number?: string; profit?: number }>;
       getInvoices?: () => Promise<Invoice[]>;
       deleteInvoice?: (id: number) => Promise<{ success: boolean; error?: string }>;
+      saveReturn?: (data: any) => Promise<{ success: boolean; id?: number; error?: string; invoice_number?: string }>;
+
+      // Debtors and Creditors API
+      getDebtorsCreditorsSummary?: () => Promise<any[]>;
+      getPersonQuotas?: (personId: number) => Promise<any[]>;
+      savePersonQuota?: (data: any) => Promise<{ success: boolean; id?: number; error?: string }>;
+      deletePersonQuota?: (id: number) => Promise<{ success: boolean; error?: string }>;
+      getPersonGoodsTransactions?: (personId: number) => Promise<any[]>;
+      addPersonGoodsTransaction?: (data: any) => Promise<{ success: boolean; id?: number; error?: string }>;
+      deletePersonGoodsTransaction?: (id: number) => Promise<{ success: boolean; error?: string }>;
+      getPersonFinancialTransactions?: (personId: number) => Promise<any[]>;
+      addPersonFinancialTransaction?: (data: any) => Promise<{ success: boolean; id?: number; error?: string }>;
+      deletePersonFinancialTransaction?: (id: number) => Promise<{ success: boolean; error?: string }>;
+      getPersonNotes?: (personId: number) => Promise<PersonNote[]>;
+      addPersonNote?: (data: any) => Promise<{ success: boolean; id?: number; error?: string }>;
+      deletePersonNote?: (id: number) => Promise<{ success: boolean; error?: string }>;
+
+      // Cash and Bank APIs
+      getCashRegisters?: () => Promise<any[]>;
+      getBankAccounts?: () => Promise<any[]>;
+      addCashRegister?: (name: string) => Promise<{ success: boolean; id?: number; error?: string }>;
+      addBankAccount?: (data: any) => Promise<{ success: boolean; id?: number; error?: string }>;
+      getTreasuryTransactions?: () => Promise<any[]>;
+      addTreasuryTransaction?: (data: any) => Promise<{ success: boolean; id?: number; error?: string }>;
+      deleteTreasuryTransaction?: (id: number) => Promise<{ success: boolean; error?: string }>;
     }
   }
 }
@@ -183,6 +226,8 @@ export interface Product {
   image_base64?: string;
   type?: 'product' | 'service';
   required_docs?: string;
+  barcode?: string;
+  min_stock?: number;
 }
 
 export interface Warehouse {

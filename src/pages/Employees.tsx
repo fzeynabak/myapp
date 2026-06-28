@@ -935,7 +935,7 @@ export default function Employees() {
                   className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                 >
                   <option value="">-- هیچکدام (کارمند مستقل جدید) --</option>
-                  {persons.map(p => (
+                  {persons.filter(p => p.is_employee === 1).map(p => (
                     <option key={p.id} value={p.id}>
                       {p.title || `${p.first_name || ''} ${p.last_name || ''}`.trim()} (کد معین: {p.accounting_code})
                     </option>

@@ -6,7 +6,7 @@ import InvoiceShapes from './InvoiceShapes';
 
 interface CustomDesignedInvoiceProps {
   invoiceDesign: InvoiceTemplateDesign;
-  printLayout: 'a4' | 'a5';
+  printLayout: 'a4' | 'a5' | 'thermal';
   printShopName: string;
   printShopSlogan: string;
   printShopAddress: string;
@@ -29,6 +29,8 @@ interface CustomDesignedInvoiceProps {
   printColPriceLabel: string;
   printColTotalLabel: string;
   printColCurrencyLabel: string;
+  receivedAmount?: number;
+  previousBalance?: number;
 }
 
 export const CustomDesignedInvoice: React.FC<CustomDesignedInvoiceProps> = ({
@@ -56,6 +58,8 @@ export const CustomDesignedInvoice: React.FC<CustomDesignedInvoiceProps> = ({
   printColPriceLabel,
   printColTotalLabel,
   printColCurrencyLabel,
+  receivedAmount = 0,
+  previousBalance = 0,
 }) => {
   // Helper to convert English digits to Persian digits
   const toPersianDigits = (str: string | number): string => {
@@ -79,12 +83,155 @@ export const CustomDesignedInvoice: React.FC<CustomDesignedInvoiceProps> = ({
     return '۱۴۰۵/۰۳/۳۰';
   };
 
+  const printStyles = `
+    @media print {
+      /* Hide all unneeded UI elements completely */
+      header, aside, footer, nav, .sidebar, .header, .no-print, button, input, select, textarea, .fixed, .bg-slate-950/70, .inset-0, #designer-controls-sidebar {
+        display: none !important;
+        visibility: hidden !important;
+      }
+
+      /* Strip all background colors, borders, and shadows from parent containers */
+      html, body, #root, [role="dialog"], div, section, main {
+        background: transparent !important;
+        background-color: transparent !important;
+        box-shadow: none !important;
+        border: none !important;
+        overflow: visible !important;
+        height: auto !important;
+        min-height: 0 !important;
+        max-height: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+      }
+      
+      /* Default everything as hidden */
+      body * {
+        visibility: hidden !important;
+      }
+
+      /* Display and show only the printable invoice component */
+      #printable-invoice, #printable-invoice * {
+        visibility: visible !important;
+      }
+
+      /* Align the invoice on the physical page */
+      #printable-invoice {
+        display: block !important;
+        position: absolute !important;
+        left: 0 !important;
+        top: 0 !important;
+        width: 100% !important;
+        max-width: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: none !important;
+        box-shadow: none !important;
+        background: #ffffff !important;
+        z-index: 9999999 !important;
+      }
+
+      /* Enforce background colors and images */
+      * {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+
+      @page {
+        size: ${printLayout === 'a4' ? 'A4 portrait' : printLayout === 'a5' ? 'A5 landscape' : '80mm auto'};
+        margin: ${printLayout === 'thermal' ? '0' : '8mm'} !important;
+      }
+    }
+  `;
+
+  if (printLayout === 'thermal') {
+    return (
+      <>
+        <style dangerouslySetInnerHTML={{ __html: printStyles }} />
+        <div 
+          id="printable-invoice" 
+          className="w-80 bg-white text-slate-950 p-4 shadow-xl font-mono border-2 border-dashed border-slate-200 leading-relaxed text-[11px] select-all decoration-none animate-in fade-in zoom-in-95 mx-auto" 
+          style={{ direction: 'rtl', fontFamily: 'Vazirmatn, sans-serif' }}
+        >
+          <div className="text-center space-y-1">
+            <p className="font-extrabold text-xs font-sans tracking-wide text-slate-900">{printShopName}</p>
+            <p className="text-[9px] font-sans text-slate-500">{printShopSlogan}</p>
+            <p className="text-[9px]">تلفن: {toPersianDigits(printShopPhone)}</p>
+            <p className="border-b border-dashed my-2 border-slate-300"></p>
+            <p className="text-[10px] text-right">شماره فاکتور: <strong className="font-sans">{toPersianDigits(invoiceNumber)}</strong></p>
+            <p className="text-[10px] text-right">مشتری/خریدار: <span className="font-bold font-sans">{selectedCustomer ? `${selectedCustomer.first_name || ''} ${selectedCustomer.last_name || ''}` : 'عمومی'}</span></p>
+          </div>
+
+          <table className="w-full text-right mt-3 border-b border-dashed border-slate-300 pb-2">
+            <thead>
+              <tr className="border-b border-slate-200 text-[10px] text-slate-700">
+                <th className="font-bold pb-1 text-right">کالا/خدمت</th>
+                <th className="text-center">تعداد</th>
+                <th className="text-left font-bold pb-1">مجموع ({printColCurrencyLabel})</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((it, idx) => {
+                const linePrice = Number(it.price ?? it.unit_price ?? 0);
+                const lineQty = Number(it.quantity ?? 0);
+                const lineDisc = Number(it.discount ?? 0);
+                const lineTaxRate = Number(it.taxRate ?? it.tax_rate ?? 0);
+                const lineSub = new Decimal(linePrice).mul(lineQty);
+                const lineTaxable = lineSub.minus(lineDisc);
+                const lineTax = lineTaxable.gt(0) ? lineTaxable.mul(lineTaxRate).div(100) : new Decimal(0);
+                const lineTotal = lineTaxable.plus(lineTax).toNumber();
+
+                return (
+                  <tr key={it.product?.id || idx} className="border-b border-slate-100 last:border-0 text-[10px]">
+                    <td className="pt-1.5 font-bold font-sans line-clamp-1">{it.product?.name || 'کالای نامشخص'}</td>
+                    <td className="text-center pt-1.5">{toPersianDigits(lineQty)}</td>
+                    <td className="text-left pt-1.5">{toPersianDigits(lineTotal.toLocaleString())}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          <div className="space-y-1 text-xs mt-3 text-right">
+            <p className="flex justify-between"><span>جمع ناخالص کل:</span> <strong>{formatCurrency(calculateSubtotal())} {printColCurrencyLabel}</strong></p>
+            {discount > 0 && <p className="flex justify-between text-rose-600"><span>تخفیف:</span> <strong>-{formatCurrency(discount)} {printColCurrencyLabel}</strong></p>}
+            {taxRate > 0 && <p className="flex justify-between text-amber-700"><span>مالیات ({taxRate}%):</span> <strong>+{formatCurrency(calculateTax())} {printColCurrencyLabel}</strong></p>}
+            <p className="flex justify-between font-bold border-t border-dashed border-slate-300 pt-1.5"><span>مبلغ نهایی تسویه:</span> <strong>{formatCurrency(calculateFinalTotal())} {printColCurrencyLabel}</strong></p>
+            <p className="flex justify-between text-emerald-600"><span>مبلغ پرداخت شده:</span> <strong>{formatCurrency(receivedAmount)} {printColCurrencyLabel}</strong></p>
+            <p className="flex justify-between border-t border-dashed border-slate-300 pt-1.5 font-bold">
+              <span>مانده حساب خریدار:</span>
+              <strong>
+                {(() => {
+                  const pB = new Decimal(previousBalance);
+                  const finalAmt = calculateFinalTotal();
+                  const recAmt = new Decimal(receivedAmount);
+                  const nextBal = pB.plus(finalAmt).minus(recAmt);
+                  if (nextBal.gt(0)) {
+                    return `${formatCurrency(nextBal)} ${printColCurrencyLabel} بدهکار`;
+                  } else if (nextBal.lt(0)) {
+                    return `${formatCurrency(nextBal.abs())} ${printColCurrencyLabel} بستانکار`;
+                  }
+                  return 'تسویه کامل';
+                })()}
+              </strong>
+            </p>
+          </div>
+
+          <p className="border-b border-dashed my-3 border-slate-300"></p>
+          <p className="text-center text-[9px] font-sans text-slate-500">{printShopAddress}</p>
+        </div>
+      </>
+    );
+  }
+
   return (
-    <div
-      id="printable-invoice"
-      className={`bg-white text-slate-950 shadow-2xl relative transition-all duration-300 ${
-        printLayout === 'a4' ? 'w-[210mm] min-h-[297mm] p-10 text-[11px]' : 'w-[148mm] min-h-[210mm] p-6 text-[9.5px]'
-      }`}
+    <>
+      <style dangerouslySetInnerHTML={{ __html: printStyles }} />
+      <div
+        id="printable-invoice"
+        className={`bg-white text-slate-950 shadow-2xl relative transition-all duration-300 ${
+          printLayout === 'a4' ? 'w-[210mm] min-h-[297mm] p-10 text-[11px]' : 'w-[148mm] min-h-[210mm] p-6 text-[9.5px]'
+        }`}
       style={{
         fontFamily: 'Vazirmatn, sans-serif',
         fontSize: invoiceDesign.fontSizeScale === 'sm' ? '10px' : invoiceDesign.fontSizeScale === 'lg' ? '13px' : invoiceDesign.fontSizeScale === 'xl' ? '15px' : '11px',
@@ -224,28 +371,41 @@ export const CustomDesignedInvoice: React.FC<CustomDesignedInvoiceProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
-                    {items.map((it, idx) => (
-                      <tr key={it.product.id || idx} className="h-8">
-                        {invoiceDesign.widgets.showItemIndexNumber && (
-                          <td className="p-2 border-l border-slate-250 text-center font-mono font-bold text-slate-500">{toPersianDigits(idx + 1)}</td>
-                        )}
-                        {invoiceDesign.widgets.showBarcodeColumn && (
-                          <td className="p-2 border-l border-slate-250 text-center font-mono text-[9px] text-slate-400">#{toPersianDigits(it.product.code || '---')}</td>
-                        )}
-                        <td className="p-2 border-l border-slate-250 font-black text-slate-800 text-xs text-right">{it.product.name}</td>
-                        {invoiceDesign.widgets.showUnitColumn && (
-                          <td className="p-2 border-l border-slate-250 text-center">{it.product.unit || 'عدد'}</td>
-                        )}
-                        <td className="p-2 border-l border-slate-250 text-center font-bold font-mono text-sm">{toPersianDigits(it.quantity)}</td>
-                        <td className="p-2 border-l border-slate-250 text-left font-mono font-bold text-slate-650">{toPersianDigits(Number(it.price ?? it.unit_price ?? 0).toLocaleString())}</td>
-                        {invoiceDesign.widgets.showItemDiscountField && (
-                          <td className="p-2 border-l border-slate-250 text-left font-mono text-red-600">۰</td>
-                        )}
-                        <td className="p-2 text-left font-mono font-black text-sm" style={{ color: invoiceDesign.primaryColor }}>
-                          {toPersianDigits(new Decimal(it.price ?? it.unit_price ?? 0).mul(it.quantity ?? 0).toNumber().toLocaleString())}
-                        </td>
-                      </tr>
-                    ))}
+                    {items.map((it, idx) => {
+                      const linePrice = Number(it.price ?? it.unit_price ?? 0);
+                      const lineQty = Number(it.quantity ?? 0);
+                      const lineDisc = Number(it.discount ?? 0);
+                      const lineTaxRate = Number(it.taxRate ?? it.tax_rate ?? 0);
+                      const lineSub = new Decimal(linePrice).mul(lineQty);
+                      const lineTaxable = lineSub.minus(lineDisc);
+                      const lineTax = lineTaxable.gt(0) ? lineTaxable.mul(lineTaxRate).div(100) : new Decimal(0);
+                      const lineTotal = lineTaxable.plus(lineTax).toNumber();
+
+                      return (
+                        <tr key={it.product.id || idx} className="h-8">
+                          {invoiceDesign.widgets.showItemIndexNumber && (
+                            <td className="p-2 border-l border-slate-250 text-center font-mono font-bold text-slate-500">{toPersianDigits(idx + 1)}</td>
+                          )}
+                          {invoiceDesign.widgets.showBarcodeColumn && (
+                            <td className="p-2 border-l border-slate-250 text-center font-mono text-[9px] text-slate-400">#{toPersianDigits(it.product.code || '---')}</td>
+                          )}
+                          <td className="p-2 border-l border-slate-250 font-black text-slate-800 text-xs text-right">{it.product.name}</td>
+                          {invoiceDesign.widgets.showUnitColumn && (
+                            <td className="p-2 border-l border-slate-250 text-center">{it.product.unit || 'عدد'}</td>
+                          )}
+                          <td className="p-2 border-l border-slate-250 text-center font-bold font-mono text-sm">{toPersianDigits(it.quantity)}</td>
+                          <td className="p-2 border-l border-slate-250 text-left font-mono font-bold text-slate-650">{toPersianDigits(linePrice.toLocaleString())}</td>
+                          {invoiceDesign.widgets.showItemDiscountField && (
+                            <td className="p-2 border-l border-slate-250 text-left font-mono text-rose-600">
+                              {lineDisc > 0 ? toPersianDigits(lineDisc.toLocaleString()) : '۰'}
+                            </td>
+                          )}
+                          <td className="p-2 text-left font-mono font-black text-sm" style={{ color: invoiceDesign.primaryColor }}>
+                            {toPersianDigits(lineTotal.toLocaleString())}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -306,6 +466,29 @@ export const CustomDesignedInvoice: React.FC<CustomDesignedInvoiceProps> = ({
                       <span>جمع خالص قابل پرداخت:</span>
                       <span className="font-mono text-xs font-black">{formatCurrency(calculateFinalTotal())} {printColCurrencyLabel}</span>
                     </div>
+                    
+                    {/* Received Amount & Remaining Balance for printing as requested */}
+                    <div className="flex justify-between items-center py-1 text-emerald-600 font-bold h-6">
+                      <span>مبلغ دریافت شده:</span>
+                      <span className="font-mono">{formatCurrency(receivedAmount)} {printColCurrencyLabel}</span>
+                    </div>
+                    <div className="flex justify-between items-center pt-1.5 text-slate-800 font-bold text-[10px]">
+                      <span>مانده حساب خریدار:</span>
+                      <span className="font-mono">
+                        {(() => {
+                          const pB = new Decimal(previousBalance);
+                          const finalTotal = calculateFinalTotal();
+                          const recAmount = new Decimal(receivedAmount);
+                          const nextBal = pB.plus(finalTotal).minus(recAmount);
+                          if (nextBal.gt(0)) {
+                            return `${formatCurrency(nextBal)} ${printColCurrencyLabel} بدهکار`;
+                          } else if (nextBal.lt(0)) {
+                            return `${formatCurrency(nextBal.abs())} ${printColCurrencyLabel} بستانکار`;
+                          }
+                          return 'تسویه کامل';
+                        })()}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -336,5 +519,6 @@ export const CustomDesignedInvoice: React.FC<CustomDesignedInvoiceProps> = ({
         })}
       </div>
     </div>
+    </>
   );
 };

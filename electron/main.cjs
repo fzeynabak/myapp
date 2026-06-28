@@ -284,6 +284,8 @@ function initializeDatabase() {
     try { db.prepare('ALTER TABLE invoices ADD COLUMN payment_method TEXT DEFAULT "کارتخوان"').run(); } catch(e) {}
     try { db.prepare('ALTER TABLE invoices ADD COLUMN payment_details TEXT').run(); } catch(e) {}
     try { db.prepare('ALTER TABLE invoices ADD COLUMN description TEXT').run(); } catch(e) {}
+    try { db.prepare("ALTER TABLE invoices ADD COLUMN type TEXT DEFAULT 'فروش'").run(); } catch(e) {}
+    try { db.prepare("ALTER TABLE invoices ADD COLUMN received_amount REAL DEFAULT 0").run(); } catch(e) {}
 
     // Categories safe schema extension
     try { db.prepare('ALTER TABLE categories ADD COLUMN image TEXT').run(); } catch(e) {}
@@ -372,6 +374,14 @@ function initializeDatabase() {
     try { db.prepare('ALTER TABLE products ADD COLUMN image_base64 TEXT').run(); } catch(e) {}
     try { db.prepare("ALTER TABLE products ADD COLUMN type TEXT DEFAULT 'product'").run(); } catch(e) {}
     try { db.prepare('ALTER TABLE products ADD COLUMN required_docs TEXT').run(); } catch(e) {}
+    try { db.prepare('ALTER TABLE products ADD COLUMN barcode TEXT').run(); } catch(e) {}
+    try { db.prepare('ALTER TABLE products ADD COLUMN min_stock REAL DEFAULT 0').run(); } catch(e) {}
+
+    // Safe inventory column extensions
+    try { db.prepare('ALTER TABLE inventory ADD COLUMN warehouse_id INTEGER').run(); } catch(e) {}
+    try { db.prepare('ALTER TABLE inventory ADD COLUMN to_warehouse_id INTEGER').run(); } catch(e) {}
+    try { db.prepare('ALTER TABLE inventory ADD COLUMN username TEXT').run(); } catch(e) {}
+    try { db.prepare('ALTER TABLE invoices ADD COLUMN username TEXT').run(); } catch(e) {}
 
     // Create price_updates table for structural audits and rolls
     try {
@@ -405,6 +415,151 @@ function initializeDatabase() {
     } catch(e) {
       console.error('Error creating price_update_items table:', e);
     }
+
+    // Advanced Debtors and Creditors tables
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS person_quotas (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          person_id INTEGER NOT NULL,
+          product_id INTEGER NOT NULL,
+          quota_quantity REAL NOT NULL,
+          period_name TEXT NOT NULL,
+          description TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (person_id) REFERENCES persons (id) ON DELETE CASCADE,
+          FOREIGN KEY (product_id) REFERENCES products (id) ON DELETE CASCADE
+        );
+      `);
+    } catch(e) {
+      console.error('Error creating person_quotas table:', e);
+    }
+
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS person_goods_ledger (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          person_id INTEGER NOT NULL,
+          product_id INTEGER NOT NULL,
+          quantity_change REAL NOT NULL,
+          type TEXT NOT NULL, -- 'deposit', 'withdrawal', 'quota_allocation'
+          unit_price_at_transaction REAL DEFAULT 0,
+          date TEXT NOT NULL,
+          description TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (person_id) REFERENCES persons (id) ON DELETE CASCADE,
+          FOREIGN KEY (product_id) REFERENCES products (id) ON DELETE CASCADE
+        );
+      `);
+    } catch(e) {
+      console.error('Error creating person_goods_ledger table:', e);
+    }
+
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS person_financial_ledger (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          person_id INTEGER NOT NULL,
+          date TEXT NOT NULL,
+          type TEXT NOT NULL, -- 'received', 'paid', 'invoice_debit', 'adjustment'
+          amount REAL NOT NULL, -- positive for debit (customer owes us), negative for credit (we owe customer)
+          description TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (person_id) REFERENCES persons (id) ON DELETE CASCADE
+        );
+      `);
+    } catch(e) {
+      console.error('Error creating person_financial_ledger table:', e);
+    }
+
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS person_notes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          person_id INTEGER NOT NULL,
+          description TEXT NOT NULL,
+          followup_date TEXT,
+          reminder TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (person_id) REFERENCES persons (id) ON DELETE CASCADE
+        );
+      `);
+    } catch(e) {
+      console.error('Error creating person_notes table:', e);
+    }
+
+    // Cash and Bank tables
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS cash_registers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          balance REAL DEFAULT 0,
+          is_default INTEGER DEFAULT 0
+        );
+      `);
+    } catch(e) {
+      console.error('Error creating cash_registers table:', e);
+    }
+
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS bank_accounts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          bank_name TEXT NOT NULL,
+          account_number TEXT NOT NULL,
+          card_number TEXT,
+          balance REAL DEFAULT 0,
+          is_default INTEGER DEFAULT 0
+        );
+      `);
+    } catch(e) {
+      console.error('Error creating bank_accounts table:', e);
+    }
+
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS treasury_transactions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          date TEXT NOT NULL,
+          source_type TEXT NOT NULL, -- 'cash' or 'bank'
+          source_id INTEGER NOT NULL,
+          type TEXT NOT NULL, -- 'deposit', 'withdrawal', 'transfer'
+          amount REAL NOT NULL,
+          destination_type TEXT, -- 'cash', 'bank', 'person', 'other'
+          destination_id INTEGER,
+          description TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+    } catch(e) {
+      console.error('Error creating treasury_transactions table:', e);
+    }
+
+    // Seed default cash registers & bank accounts
+    try {
+      const cashCheck = db.prepare("SELECT COUNT(*) as cnt FROM cash_registers").get();
+      if (cashCheck.cnt === 0) {
+        db.prepare("INSERT INTO cash_registers (name, balance, is_default) VALUES (?, ?, ?)").run('صندوق اصلی فروشگاه', 0, 1);
+        db.prepare("INSERT INTO cash_registers (name, balance, is_default) VALUES (?, ?, ?)").run('صندوق جانبی / کشو', 0, 0);
+      }
+    } catch(e) {
+      console.error('Error seeding default cash_registers:', e);
+    }
+
+    try {
+      const bankCheck = db.prepare("SELECT COUNT(*) as cnt FROM bank_accounts").get();
+      if (bankCheck.cnt === 0) {
+        db.prepare("INSERT INTO bank_accounts (bank_name, account_number, card_number, balance, is_default) VALUES (?, ?, ?, ?, ?)").run('بانک ملی', '0102030405006', '6037991122334455', 0, 1);
+        db.prepare("INSERT INTO bank_accounts (bank_name, account_number, card_number, balance, is_default) VALUES (?, ?, ?, ?, ?)").run('بانک ملت', '1234567890', '6104337788990011', 0, 0);
+      }
+    } catch(e) {
+      console.error('Error seeding default bank_accounts:', e);
+    }
+
+    try { db.prepare('ALTER TABLE persons ADD COLUMN business_name TEXT').run(); } catch(e) {}
+    try { db.prepare('ALTER TABLE persons ADD COLUMN business_activity TEXT').run(); } catch(e) {}
+    try { db.prepare('ALTER TABLE persons ADD COLUMN business_address TEXT').run(); } catch(e) {}
 
     console.log('Database initialized successfully with categories, brands and employees.');
   } catch (error) {
@@ -490,6 +645,131 @@ ipcMain.handle('getDbStats', () => {
   };
 });
 
+ipcMain.handle('getDashboardData', () => {
+  if (!db) return { success: false, error: 'Database not connected' };
+  try {
+    // 1. Active customers count
+    const customersCount = db.prepare(`
+      SELECT COUNT(DISTINCT id) as count FROM persons 
+      WHERE category = 'مشتری' OR id IN (SELECT DISTINCT customer_id FROM invoices)
+    `).get().count;
+
+    // 2. Products count
+    const productsCount = db.prepare(`
+      SELECT COUNT(*) as count FROM products WHERE type = 'product' OR type IS NULL
+    `).get().count;
+
+    // 3. Today's invoices
+    const todayInvoicesCount = db.prepare(`
+      SELECT COUNT(*) as count FROM invoices 
+      WHERE date(date, 'localtime') = date('now', 'localtime') OR date(date) = date('now')
+    `).get().count;
+
+    // 4. Today's sales
+    const todaySales = db.prepare(`
+      SELECT COALESCE(SUM(final_amount), 0) as total FROM invoices 
+      WHERE date(date, 'localtime') = date('now', 'localtime') OR date(date) = date('now')
+    `).get().total;
+
+    // 5. Today's profit
+    const todayProfit = db.prepare(`
+      SELECT COALESCE(SUM(ii.quantity * (ii.unit_price - COALESCE(p.cost, 0))), 0) as profit 
+      FROM invoice_items ii 
+      JOIN invoices i ON ii.invoice_id = i.id 
+      JOIN products p ON ii.product_id = p.id 
+      WHERE date(i.date, 'localtime') = date('now', 'localtime') OR date(i.date) = date('now')
+    `).get().profit;
+
+    // 6. Products stock query
+    const productsStock = db.prepare(`
+      SELECT p.id, p.name, p.code, p.unit, p.price, p.cost,
+        (SELECT COALESCE(SUM(quantity), 0) FROM warehouse_stocks WHERE product_id = p.id) as total_stock
+      FROM products p
+      WHERE p.type = 'product' OR p.type IS NULL
+    `).all();
+
+    const lowStockProducts = productsStock.filter(p => p.total_stock <= 5);
+    const lowStockCount = lowStockProducts.length;
+
+    // 7. Recent Invoices (limit 15)
+    const recentInvoices = db.prepare(`
+      SELECT i.*, 
+        COALESCE(p.nickname, p.first_name || ' ' || p.last_name, 'مشتری عمومی (فروش سریع)') as customer_name
+      FROM invoices i
+      LEFT JOIN persons p ON i.customer_id = p.id
+      ORDER BY i.id DESC
+      LIMIT 15
+    `).all();
+
+    // 8. Recent Financial Ledger Entries (limit 15)
+    const recentLedger = db.prepare(`
+      SELECT l.*, 
+        COALESCE(p.nickname, p.first_name || ' ' || p.last_name, 'شخص عمومی') as person_name
+      FROM person_financial_ledger l
+      JOIN persons p ON l.person_id = p.id
+      ORDER BY l.id DESC
+      LIMIT 15
+    `).all();
+
+    // 9. Unpaid Invoices
+    const unpaidInvoices = db.prepare(`
+      SELECT i.*, 
+        COALESCE(p.nickname, p.first_name || ' ' || p.last_name, 'مشتری عمومی') as customer_name
+      FROM invoices i
+      LEFT JOIN persons p ON i.customer_id = p.id
+      WHERE i.status != 'پرداخت شده'
+      ORDER BY i.id DESC
+      LIMIT 15
+    `).all();
+
+    // 10. Customer Debts
+    const persons = db.prepare(`
+      SELECT id, first_name, last_name, nickname, type, category
+      FROM persons
+    `).all();
+    const customerDebts = [];
+    for (const p of persons) {
+      const invoiceDebts = db.prepare(`
+        SELECT SUM(final_amount) as total FROM invoices 
+        WHERE customer_id = ? AND status != 'پرداخت شده'
+      `).get(p.id).total || 0;
+
+      const manualBalance = db.prepare(`
+        SELECT SUM(amount) as total FROM person_financial_ledger 
+        WHERE person_id = ?
+      `).get(p.id).total || 0;
+
+      const netBalance = invoiceDebts + manualBalance;
+      if (netBalance > 100) {
+        customerDebts.push({
+          id: p.id,
+          name: p.nickname || `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'شخص بدون نام',
+          debt: netBalance
+        });
+      }
+    }
+    customerDebts.sort((a, b) => b.debt - a.debt);
+
+    return {
+      success: true,
+      customersCount,
+      productsCount,
+      todayInvoicesCount,
+      todaySales,
+      todayProfit,
+      lowStockCount,
+      lowStockProducts,
+      recentInvoices,
+      recentLedger,
+      unpaidInvoices,
+      customerDebts
+    };
+  } catch (e) {
+    console.error('Error fetching dashboard data:', e);
+    return { success: false, error: e.message };
+  }
+});
+
 const { dialog } = require('electron');
 
 ipcMain.handle('changeDbPath', async (event) => {
@@ -553,23 +833,66 @@ ipcMain.handle('addPerson', (event, personData) => {
         national_id, economic_code, registration_number, personal_code, credit_limit, 
         tax_registered, address, country, city, postal_code, phone1, phone2, phone3, 
         fax, email, website, bank_account, bank_card, bank_name, iban, birth_date, 
-        membership_date, marriage_date, description, avatar
+        membership_date, marriage_date, description, avatar,
+        business_name, business_activity, business_address
       ) VALUES (
         @accounting_code, @first_name, @last_name, @title, @nickname, @type, @category,
         @national_id, @economic_code, @registration_number, @personal_code, @credit_limit,
         @tax_registered, @address, @country, @city, @postal_code, @phone1, @phone2, @phone3,
         @fax, @email, @website, @bank_account, @bank_card, @bank_name, @iban, @birth_date,
-        @membership_date, @marriage_date, @description, @avatar
+        @membership_date, @marriage_date, @description, @avatar,
+        @business_name, @business_activity, @business_address
       )
     `);
 
-    const info = stmt.run({
+    const defaultParams = {
+      accounting_code: '',
+      first_name: '',
+      last_name: '',
+      title: '',
+      nickname: '',
+      type: 'حقیقی',
+      category: '',
+      national_id: '',
+      economic_code: '',
+      registration_number: '',
+      personal_code: '',
+      credit_limit: 0,
+      tax_registered: 0,
+      address: '',
+      country: '',
+      city: '',
+      postal_code: '',
+      phone1: '',
+      phone2: '',
+      phone3: '',
+      fax: '',
+      email: '',
+      website: '',
+      bank_account: '',
+      bank_card: '',
+      bank_name: '',
+      iban: '',
+      birth_date: '',
+      membership_date: '',
+      marriage_date: '',
+      description: '',
+      avatar: '',
+      business_name: '',
+      business_activity: '',
+      business_address: ''
+    };
+
+    const runParams = {
+      ...defaultParams,
       ...personData,
       accounting_code,
       tax_registered: personData.tax_registered ? 1 : 0,
       credit_limit: personData.credit_limit || 0,
       avatar: personData.avatar || ''
-    });
+    };
+
+    const info = stmt.run(runParams);
     
     const personId = info.lastInsertRowid;
     const nameStr = personData.title || (personData.first_name + ' ' + personData.last_name);
@@ -657,6 +980,9 @@ ipcMain.handle('updatePerson', (event, personData) => {
         marriage_date = @marriage_date,
         description = @description,
         avatar = @avatar,
+        business_name = @business_name,
+        business_activity = @business_activity,
+        business_address = @business_address,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = @id
     `);
@@ -665,7 +991,10 @@ ipcMain.handle('updatePerson', (event, personData) => {
       ...personData,
       tax_registered: personData.tax_registered ? 1 : 0,
       credit_limit: personData.credit_limit || 0,
-      avatar: personData.avatar || ''
+      avatar: personData.avatar || '',
+      business_name: personData.business_name || '',
+      business_activity: personData.business_activity || '',
+      business_address: personData.business_address || ''
     });
 
     const roles = personData.roles || [];
@@ -1463,7 +1792,9 @@ ipcMain.handle('saveProduct', (event, data) => {
           serial_number = @serial_number,
           image_base64 = @image_base64,
           type = @type,
-          required_docs = @required_docs
+          required_docs = @required_docs,
+          barcode = @barcode,
+          min_stock = @min_stock
         WHERE id = @id
       `).run({
         id: productId,
@@ -1479,13 +1810,15 @@ ipcMain.handle('saveProduct', (event, data) => {
         serial_number: data.serial_number || '',
         image_base64: data.image_base64 || '',
         type: data.type || 'product',
-        required_docs: data.required_docs || null
+        required_docs: data.required_docs || null,
+        barcode: data.barcode || '',
+        min_stock: parseFloat(data.min_stock || 0)
       });
     } else {
       // Insert new product
       const info = db.prepare(`
-        INSERT INTO products (name, code, price, cost, category_id, brand_id, unit, description, internal_sku, serial_number, image_base64, type, required_docs)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO products (name, code, price, cost, category_id, brand_id, unit, description, internal_sku, serial_number, image_base64, type, required_docs, barcode, min_stock)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         data.name,
         data.code,
@@ -1499,7 +1832,9 @@ ipcMain.handle('saveProduct', (event, data) => {
         data.serial_number || '',
         data.image_base64 || '',
         data.type || 'product',
-        data.required_docs || null
+        data.required_docs || null,
+        data.barcode || '',
+        parseFloat(data.min_stock || 0)
       );
       productId = info.lastInsertRowid;
     }
@@ -1534,6 +1869,76 @@ ipcMain.handle('saveProduct', (event, data) => {
     if (db.inTransaction) db.prepare('ROLLBACK').run();
     console.error('Error saving product:', e);
     throw e;
+  }
+});
+
+// ==================== NEW PRODUCT HISTORY & LEDGER CHANNELS ====================
+
+ipcMain.handle('getProductSalesHistory', (event, productId) => {
+  if (!db) return [];
+  try {
+    return db.prepare(`
+      SELECT ii.*, inv.invoice_number, inv.date, inv.customer_id,
+             (p.first_name || ' ' || p.last_name) as customer_name
+      FROM invoice_items ii
+      JOIN invoices inv ON ii.invoice_id = inv.id
+      LEFT JOIN persons p ON inv.customer_id = p.id
+      WHERE ii.product_id = ?
+      ORDER BY inv.date DESC, inv.id DESC
+    `).all(productId);
+  } catch (e) {
+    console.error('Error fetching product sales history:', e);
+    return [];
+  }
+});
+
+ipcMain.handle('getProductPurchaseHistory', (event, productId) => {
+  if (!db) return [];
+  try {
+    const ledgerPurchases = db.prepare(`
+      SELECT pgl.id, pgl.date, pgl.quantity_change as quantity, pgl.unit_price_at_transaction as unit_price,
+             (pgl.quantity_change * pgl.unit_price_at_transaction) as total,
+             (p.first_name || ' ' || p.last_name) as source_name,
+             pgl.description
+      FROM person_goods_ledger pgl
+      LEFT JOIN persons p ON pgl.person_id = p.id
+      WHERE pgl.product_id = ? AND pgl.quantity_change > 0
+      ORDER BY pgl.date DESC, pgl.id DESC
+    `).all(productId);
+
+    const inventoryEntries = db.prepare(`
+      SELECT iv.id, iv.date, iv.quantity_change as quantity, p.cost as unit_price,
+             (iv.quantity_change * p.cost) as total,
+             'انبارداری / ثبت اولیه' as source_name,
+             iv.description
+      FROM inventory iv
+      JOIN products p ON iv.product_id = p.id
+      WHERE iv.product_id = ? AND iv.type = 'ورود' AND iv.quantity_change > 0
+      ORDER BY iv.date DESC, iv.id DESC
+    `).all(productId);
+
+    const combined = [...ledgerPurchases, ...inventoryEntries].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    return combined;
+  } catch (e) {
+    console.error('Error fetching product purchase history:', e);
+    return [];
+  }
+});
+
+ipcMain.handle('getProductInventoryCirculation', (event, productId) => {
+  if (!db) return [];
+  try {
+    return db.prepare(`
+      SELECT iv.*, w.name as warehouse_name, tw.name as to_warehouse_name
+      FROM inventory iv
+      LEFT JOIN warehouses w ON iv.warehouse_id = w.id
+      LEFT JOIN warehouses tw ON iv.to_warehouse_id = tw.id
+      WHERE iv.product_id = ?
+      ORDER BY iv.date DESC, iv.id DESC
+    `).all(productId);
+  } catch (e) {
+    console.error('Error fetching product inventory circulation:', e);
+    return [];
   }
 });
 
@@ -1640,6 +2045,87 @@ ipcMain.handle('getWarehouseStocks', (event, warehouseId) => {
   } catch (e) {
     console.error('Error fetching warehouse stocks:', e);
     return [];
+  }
+});
+
+ipcMain.handle('getInventoryHistory', (event) => {
+  if (!db) return [];
+  try {
+    return db.prepare(`
+      SELECT iv.*, p.name as product_name, p.code as product_code, p.unit, p.price, p.cost,
+             w.name as warehouse_name, tw.name as to_warehouse_name
+      FROM inventory iv
+      JOIN products p ON iv.product_id = p.id
+      LEFT JOIN warehouses w ON iv.warehouse_id = w.id
+      LEFT JOIN warehouses tw ON iv.to_warehouse_id = tw.id
+      ORDER BY iv.id DESC
+    `).all();
+  } catch (e) {
+    console.error('Error fetching inventory history:', e);
+    return [];
+  }
+});
+
+ipcMain.handle('addWarehouseTransaction', (event, data) => {
+  if (!db) throw new Error("دیتابیس متصل نیست");
+  try {
+    db.prepare('BEGIN').run();
+    const { warehouse_id, to_warehouse_id, product_id, quantity_change, type, description, date, username } = data;
+    const qty = parseFloat(quantity_change);
+
+    if (type === 'ورود') {
+      const existing = db.prepare('SELECT id, quantity FROM warehouse_stocks WHERE warehouse_id = ? AND product_id = ?').get(warehouse_id, product_id);
+      if (existing) {
+        db.prepare('UPDATE warehouse_stocks SET quantity = quantity + ? WHERE id = ?').run(qty, existing.id);
+      } else {
+        db.prepare('INSERT INTO warehouse_stocks (warehouse_id, product_id, quantity) VALUES (?, ?, ?)').run(warehouse_id, product_id, qty);
+      }
+      db.prepare(`
+        INSERT INTO inventory (product_id, quantity_change, type, description, date, warehouse_id, username)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(product_id, qty, 'ورود', description, date || new Date().toISOString(), warehouse_id, username || null);
+
+    } else if (type === 'خروج') {
+      const existing = db.prepare('SELECT id, quantity FROM warehouse_stocks WHERE warehouse_id = ? AND product_id = ?').get(warehouse_id, product_id);
+      if (!existing || existing.quantity < qty) {
+        throw new Error('موجودی کافی در این انبار جهت خروج وجود ندارد');
+      }
+      db.prepare('UPDATE warehouse_stocks SET quantity = quantity - ? WHERE id = ?').run(qty, existing.id);
+      
+      db.prepare(`
+        INSERT INTO inventory (product_id, quantity_change, type, description, date, warehouse_id, username)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(product_id, -qty, 'خروج', description, date || new Date().toISOString(), warehouse_id, username || null);
+
+    } else if (type === 'انتقال') {
+      if (!to_warehouse_id) throw new Error('انبار مقصد مشخص نشده است');
+      if (parseInt(warehouse_id) === parseInt(to_warehouse_id)) throw new Error('انبار مبدا و مقصد نمی‌توانند یکسان باشند');
+
+      const sourceStock = db.prepare('SELECT id, quantity FROM warehouse_stocks WHERE warehouse_id = ? AND product_id = ?').get(warehouse_id, product_id);
+      if (!sourceStock || sourceStock.quantity < qty) {
+        throw new Error('موجودی کافی در انبار مبدا جهت انتقال وجود ندارد');
+      }
+      db.prepare('UPDATE warehouse_stocks SET quantity = quantity - ? WHERE id = ?').run(qty, sourceStock.id);
+
+      const destStock = db.prepare('SELECT id, quantity FROM warehouse_stocks WHERE warehouse_id = ? AND product_id = ?').get(to_warehouse_id, product_id);
+      if (destStock) {
+        db.prepare('UPDATE warehouse_stocks SET quantity = quantity + ? WHERE id = ?').run(qty, destStock.id);
+      } else {
+        db.prepare('INSERT INTO warehouse_stocks (warehouse_id, product_id, quantity) VALUES (?, ?, ?)').run(to_warehouse_id, product_id, qty);
+      }
+
+      db.prepare(`
+        INSERT INTO inventory (product_id, quantity_change, type, description, date, warehouse_id, to_warehouse_id, username)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(product_id, qty, 'انتقال', description, date || new Date().toISOString(), warehouse_id, to_warehouse_id, username || null);
+    }
+
+    db.prepare('COMMIT').run();
+    return { success: true };
+  } catch (e) {
+    if (db.inTransaction) db.prepare('ROLLBACK').run();
+    console.error('Error adding warehouse transaction:', e);
+    return { success: false, error: e.message };
   }
 });
 
@@ -1766,13 +2252,14 @@ ipcMain.handle('saveInvoice', (event, data) => {
     let invoiceNumber = data.invoice_number;
     if (!invoiceNumber) {
       const count = db.prepare('SELECT COUNT(*) as c FROM invoices').get().c;
-      invoiceNumber = `INV-${new Date().toISOString().slice(2,10).replace(/-/g,'')}-${String(count + 1).padStart(4, '0')}`;
+      const prefix = data.type === 'خرید' ? 'PUR' : 'INV';
+      invoiceNumber = `${prefix}-${new Date().toISOString().slice(2,10).replace(/-/g,'')}-${String(count + 1).padStart(4, '0')}`;
     }
 
     // 2. Insert invoice details
     const info = db.prepare(`
-      INSERT INTO invoices (invoice_number, customer_id, total_amount, discount, tax, final_amount, status, payment_method, payment_details, description)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO invoices (invoice_number, customer_id, total_amount, discount, tax, final_amount, status, payment_method, payment_details, description, type, received_amount, date, username)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       invoiceNumber,
       data.customer_id || null, 
@@ -1783,11 +2270,15 @@ ipcMain.handle('saveInvoice', (event, data) => {
       data.status || 'پرداخت شده',
       data.payment_method || 'کارتخوان',
       data.payment_details || '',
-      data.description || ''
+      data.description || '',
+      data.type || 'فروش',
+      parseFloat(data.received_amount || 0),
+      data.date || new Date().toISOString(),
+      data.username || null
     );
     const invoiceId = info.lastInsertRowid;
 
-    // 3. Insert invoice items and update warehouse stock
+    // 3. Insert invoice items, calculate profit, update warehouse stock, and save last purchase price
     const itemStmt = db.prepare(`
       INSERT INTO invoice_items (invoice_id, product_id, quantity, unit_price, total)
       VALUES (?, ?, ?, ?, ?)
@@ -1795,7 +2286,11 @@ ipcMain.handle('saveInvoice', (event, data) => {
 
     const checkStockStmt = db.prepare('SELECT id, quantity FROM warehouse_stocks WHERE warehouse_id = 1 AND product_id = ?');
     const updateStockStmt = db.prepare('UPDATE warehouse_stocks SET quantity = quantity - ? WHERE id = ?');
+    const addStockStmt = db.prepare('UPDATE warehouse_stocks SET quantity = quantity + ? WHERE id = ?');
     const insertStockStmt = db.prepare('INSERT INTO warehouse_stocks (warehouse_id, product_id, quantity) VALUES (1, ?, ?)');
+
+    let totalProfit = 0;
+    const isPurchase = (data.type === 'خرید');
 
     for (const item of data.items) {
       itemStmt.run(
@@ -1806,27 +2301,151 @@ ipcMain.handle('saveInvoice', (event, data) => {
         parseFloat(item.total || 0)
       );
 
-      // Check product type - skip stock deduction for services
-      const prod = db.prepare('SELECT type FROM products WHERE id = ?').get(item.product_id);
-      if (prod && prod.type === 'product') {
-        const qty = parseFloat(item.quantity || 1);
-        const existingStock = checkStockStmt.get(item.product_id);
-        if (existingStock) {
-          updateStockStmt.run(qty, existingStock.id);
-        } else {
-          insertStockStmt.run(item.product_id, -qty);
-        }
+      // Check product details to calculate profit or update purchase price
+      const prod = db.prepare('SELECT type, cost FROM products WHERE id = ?').get(item.product_id);
+      const qty = parseFloat(item.quantity || 1);
+      const price = parseFloat(item.unit_price || 0);
 
-        // Also add an audit log in inventory table
-        db.prepare(`
-          INSERT INTO inventory (product_id, quantity_change, type, description)
-          VALUES (?, ?, 'فروش', ?)
-        `).run(item.product_id, -qty, `خروج بابت فاکتور فروش شماره ${invoiceNumber}`);
+      if (isPurchase) {
+        // Save the last purchase price (cost) in the products table
+        db.prepare('UPDATE products SET cost = ? WHERE id = ?').run(price, item.product_id);
+
+        // Increase warehouse stock for products
+        if (prod && prod.type === 'product') {
+          const existingStock = checkStockStmt.get(item.product_id);
+          if (existingStock) {
+            addStockStmt.run(qty, existingStock.id);
+          } else {
+            insertStockStmt.run(item.product_id, qty);
+          }
+
+          // Cardex log in inventory table
+          db.prepare(`
+            INSERT INTO inventory (product_id, quantity_change, type, description, date, warehouse_id, username)
+            VALUES (?, ?, 'خرید', ?, ?, 1, ?)
+          `).run(item.product_id, qty, `ورود بابت فاکتور خرید شماره ${invoiceNumber}`, data.date || new Date().toISOString(), data.username || null);
+        }
+      } else {
+        // Sale: calculate profit
+        const cost = prod ? (prod.cost || 0) : 0;
+        const itemProfit = qty * (price - cost);
+        totalProfit += itemProfit;
+
+        // Decrease stock
+        if (prod && prod.type === 'product') {
+          const existingStock = checkStockStmt.get(item.product_id);
+          if (existingStock) {
+            updateStockStmt.run(qty, existingStock.id);
+          } else {
+            insertStockStmt.run(item.product_id, -qty);
+          }
+
+          // Cardex log in inventory table
+          db.prepare(`
+            INSERT INTO inventory (product_id, quantity_change, type, description, date, warehouse_id, username)
+            VALUES (?, ?, 'فروش', ?, ?, 1, ?)
+          `).run(item.product_id, -qty, `خروج بابت فاکتور فروش شماره ${invoiceNumber}`, data.date || new Date().toISOString(), data.username || null);
+        }
+      }
+    }
+
+    if (!isPurchase) {
+      // Adjust total profit by subtracting total invoice-level discount
+      totalProfit -= parseFloat(data.discount || 0);
+    }
+
+    // 4. Record Supplier/Customer Financial Transaction (گردش حساب طرف حساب)
+    if (data.customer_id) {
+      const isPaid = (data.status === 'پرداخت شده');
+      const finalAmt = parseFloat(data.final_amount || 0);
+      const recvAmt = parseFloat(data.received_amount || 0);
+      const txDate = data.date || new Date().toISOString().slice(0, 10);
+
+      if (isPurchase) {
+        // Purchase:
+        if (isPaid) {
+          // Record we owe the supplier (credit)
+          db.prepare(`
+            INSERT INTO person_financial_ledger (person_id, date, type, amount, description)
+            VALUES (?, ?, 'invoice_credit', ?, ?)
+          `).run(
+            data.customer_id,
+            txDate,
+            -finalAmt,
+            `ثبت فاکتور خرید شماره ${invoiceNumber}`
+          );
+
+          // Record we paid them (debit)
+          if (recvAmt > 0) {
+            db.prepare(`
+              INSERT INTO person_financial_ledger (person_id, date, type, amount, description)
+              VALUES (?, ?, 'paid', ?, ?)
+            `).run(
+              data.customer_id,
+              txDate,
+              recvAmt,
+              `تسویه نقدی/بانکی فاکتور خرید شماره ${invoiceNumber}`
+            );
+          }
+        } else {
+          // Unpaid or partially paid: unpaid part will count dynamically, only log payment portion as debit
+          if (recvAmt > 0) {
+            db.prepare(`
+              INSERT INTO person_financial_ledger (person_id, date, type, amount, description)
+              VALUES (?, ?, 'paid', ?, ?)
+            `).run(
+              data.customer_id,
+              txDate,
+              recvAmt,
+              `پرداخت نقدی/بانکی بابت فاکتور خرید شماره ${invoiceNumber}`
+            );
+          }
+        }
+      } else {
+        // Sale:
+        if (isPaid) {
+          // Fully paid invoice: Log debit (the sale) and credit (the payment) so both appear in statement of accounts
+          db.prepare(`
+            INSERT INTO person_financial_ledger (person_id, date, type, amount, description)
+            VALUES (?, ?, 'invoice_debit', ?, ?)
+          `).run(
+            data.customer_id,
+            txDate,
+            finalAmt,
+            `خرید کالا/خدمات فاکتور فروش شماره ${invoiceNumber}`
+          );
+
+          if (recvAmt > 0) {
+            db.prepare(`
+              INSERT INTO person_financial_ledger (person_id, date, type, amount, description)
+              VALUES (?, ?, 'received', ?, ?)
+            `).run(
+              data.customer_id,
+              txDate,
+              -recvAmt,
+              `تسویه نقدی/کارتخوان فاکتور شماره ${invoiceNumber}`
+            );
+          }
+        } else {
+          // Unpaid or partially paid invoice: Invoice final_amount is counted as debt in invoiceDebts automatically.
+          // Therefore, we ONLY log the received payment portion (if any) as a credit in the financial ledger to avoid double counting!
+          if (recvAmt > 0) {
+            db.prepare(`
+              INSERT INTO person_financial_ledger (person_id, date, type, amount, description)
+              VALUES (?, ?, 'received', ?, ?)
+            `).run(
+              data.customer_id,
+              txDate,
+              -recvAmt,
+              `پرداخت بخشی از مبلغ فاکتور شماره ${invoiceNumber}`
+            );
+          }
+        }
       }
     }
 
     db.prepare('COMMIT').run();
-    return { success: true, id: invoiceId, invoice_number: invoiceNumber };
+    return { success: true, id: invoiceId, invoice_number: invoiceNumber, profit: isPurchase ? 0 : totalProfit };
   } catch (e) {
     if (db.inTransaction) db.prepare('ROLLBACK').run();
     console.error('Error saving invoice:', e);
@@ -1866,15 +2485,32 @@ ipcMain.handle('getInvoices', () => {
   }
 });
 
-ipcMain.handle('deleteInvoice', (event, id) => {
+ipcMain.handle('deleteInvoice', (event, idOrData) => {
   if (!db) throw new Error("دیتابیس متصل نیست");
   try {
+    let id;
+    let username = null;
+    if (typeof idOrData === 'object' && idOrData !== null) {
+      id = idOrData.id;
+      username = idOrData.username;
+    } else {
+      id = idOrData;
+    }
+
     db.prepare('BEGIN').run();
+
+    const invoice = db.prepare('SELECT type, invoice_number FROM invoices WHERE id = ?').get(id);
+    const invoiceType = invoice ? invoice.type : 'فروش';
 
     const items = db.prepare('SELECT ii.*, i.invoice_number FROM invoice_items ii JOIN invoices i ON ii.invoice_id = i.id WHERE ii.invoice_id = ?').all(id);
     
     const checkStockStmt = db.prepare('SELECT id FROM warehouse_stocks WHERE warehouse_id = 1 AND product_id = ?');
     const restoreStockStmt = db.prepare('UPDATE warehouse_stocks SET quantity = quantity + ? WHERE id = ?');
+    const decreaseStockStmt = db.prepare('UPDATE warehouse_stocks SET quantity = quantity - ? WHERE id = ?');
+
+    // 'خرید' and 'برگشت از فروش' are operations that increased stock, so deleting them should decrease stock.
+    // 'فروش' and 'برگشت از خرید' are operations that decreased stock, so deleting them should increase stock.
+    const isStockIncreasingType = (invoiceType === 'خرید' || invoiceType === 'برگشت از فروش');
 
     for (const item of items) {
       const prod = db.prepare('SELECT type FROM products WHERE id = ?').get(item.product_id);
@@ -1882,24 +2518,628 @@ ipcMain.handle('deleteInvoice', (event, id) => {
         const qty = parseFloat(item.quantity || 1);
         const existingStock = checkStockStmt.get(item.product_id);
         if (existingStock) {
-          restoreStockStmt.run(qty, existingStock.id);
+          if (isStockIncreasingType) {
+            decreaseStockStmt.run(qty, existingStock.id);
+          } else {
+            restoreStockStmt.run(qty, existingStock.id);
+          }
         }
 
+        const revType = isStockIncreasingType ? 'کاهش موجودی (لغو)' : 'افزایش موجودی (لغو)';
+        const revDesc = `اصلاح موجودی بابت حذف سند فاکتور شماره ${item.invoice_number}`;
+
         db.prepare(`
-          INSERT INTO inventory (product_id, quantity_change, type, description)
-          VALUES (?, ?, 'برگشت', ?)
-        `).run(item.product_id, qty, `برگشت به انبار بابت لغو فاکتور شماره ${item.invoice_number}`);
+          INSERT INTO inventory (product_id, quantity_change, type, description, username)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(item.product_id, isStockIncreasingType ? -qty : qty, revType, revDesc, username || null);
       }
     }
 
     db.prepare('DELETE FROM invoice_items WHERE invoice_id = ?').run(id);
     db.prepare('DELETE FROM invoices WHERE id = ?').run(id);
 
+    // Clean up any related financial ledger entries for this invoice
+    if (invoice && invoice.invoice_number) {
+      db.prepare("DELETE FROM person_financial_ledger WHERE description LIKE ?").run(`%${invoice.invoice_number}%`);
+    }
+
     db.prepare('COMMIT').run();
     return { success: true };
   } catch (e) {
     if (db.inTransaction) db.prepare('ROLLBACK').run();
     console.error('Error deleting/canceling invoice:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+// Save Return Invoice (Sales Return & Purchase Return)
+ipcMain.handle('saveReturn', (event, data) => {
+  if (!db) throw new Error("دیتابیس متصل نیست");
+  try {
+    db.prepare('BEGIN').run();
+
+    const { type, customer_id, invoice_id, original_invoice_num, date, items, discount, description, amountPaid, username } = data;
+    const isSalesReturn = (type === 'sales_return');
+
+    // 1. Generate return invoice number
+    const count = db.prepare("SELECT COUNT(*) as c FROM invoices WHERE type IN ('برگشت از فروش', 'برگشت از خرید')").get().c;
+    const prefix = isSalesReturn ? 'SRT' : 'PRT';
+    const invoiceNumber = `${prefix}-${new Date().toISOString().slice(2,10).replace(/-/g,'')}-${String(count + 1).padStart(4, '0')}`;
+
+    const totalAmount = items.reduce((sum, item) => sum + parseFloat(item.quantity || 0) * parseFloat(item.unit_price || 0), 0);
+    const finalAmount = Math.max(0, totalAmount - parseFloat(discount || 0));
+
+    // 2. Insert into invoices table
+    const info = db.prepare(`
+      INSERT INTO invoices (invoice_number, customer_id, total_amount, discount, tax, final_amount, status, payment_method, description, type, received_amount, date, username)
+      VALUES (?, ?, ?, ?, 0, ?, 'برگشت', 'نقدی', ?, ?, ?, ?, ?)
+    `).run(
+      invoiceNumber,
+      customer_id || null,
+      totalAmount,
+      parseFloat(discount || 0),
+      finalAmount,
+      description || '',
+      isSalesReturn ? 'برگشت از فروش' : 'برگشت از خرید',
+      parseFloat(amountPaid || 0),
+      date || new Date().toISOString(),
+      username || null
+    );
+    const returnId = info.lastInsertRowid;
+
+    // 3. Insert items and update stock
+    const itemStmt = db.prepare(`
+      INSERT INTO invoice_items (invoice_id, product_id, quantity, unit_price, total)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+
+    const checkStockStmt = db.prepare('SELECT id, quantity FROM warehouse_stocks WHERE warehouse_id = 1 AND product_id = ?');
+    const addStockStmt = db.prepare('UPDATE warehouse_stocks SET quantity = quantity + ? WHERE id = ?');
+    const updateStockStmt = db.prepare('UPDATE warehouse_stocks SET quantity = quantity - ? WHERE id = ?');
+    const insertStockStmt = db.prepare('INSERT INTO warehouse_stocks (warehouse_id, product_id, quantity) VALUES (1, ?, ?)');
+
+    for (const item of items) {
+      const qty = parseFloat(item.quantity || 0);
+      const price = parseFloat(item.unit_price || 0);
+      const total = qty * price;
+
+      itemStmt.run(returnId, item.product_id, qty, price, total);
+
+      const prod = db.prepare('SELECT type FROM products WHERE id = ?').get(item.product_id);
+
+      if (prod && prod.type === 'product') {
+        const existingStock = checkStockStmt.get(item.product_id);
+        if (isSalesReturn) {
+          // Sales Return: Increase stock
+          if (existingStock) {
+            addStockStmt.run(qty, existingStock.id);
+          } else {
+            insertStockStmt.run(item.product_id, qty);
+          }
+
+          // Cardex log
+          db.prepare(`
+            INSERT INTO inventory (product_id, quantity_change, type, description, date, warehouse_id, username)
+            VALUES (?, ?, 'برگشت از فروش', ?, ?, 1, ?)
+          `).run(
+            item.product_id,
+            qty,
+            `ورود بابت برگشت از فروش شماره ${invoiceNumber}${original_invoice_num ? ` (مربوط به فاکتور فروش ${original_invoice_num})` : ''}`,
+            date || new Date().toISOString(),
+            username || null
+          );
+        } else {
+          // Purchase Return: Decrease stock
+          if (existingStock) {
+            updateStockStmt.run(qty, existingStock.id);
+          } else {
+            insertStockStmt.run(item.product_id, -qty);
+          }
+
+          // Cardex log
+          db.prepare(`
+            INSERT INTO inventory (product_id, quantity_change, type, description, date, warehouse_id, username)
+            VALUES (?, ?, 'برگشت از خرید', ?, ?, 1, ?)
+          `).run(
+            item.product_id,
+            -qty,
+            `خروج بابت برگشت از خرید شماره ${invoiceNumber}${original_invoice_num ? ` (مربوط به فاکتور خرید ${original_invoice_num})` : ''}`,
+            date || new Date().toISOString(),
+            username || null
+          );
+        }
+      }
+    }
+
+    // 4. Record financial ledger entries
+    if (customer_id) {
+      if (isSalesReturn) {
+        // Decrease customer's debt (credit customer, negative amount)
+        db.prepare(`
+          INSERT INTO person_financial_ledger (person_id, date, type, amount, description)
+          VALUES (?, ?, 'sales_return', ?, ?)
+        `).run(
+          customer_id,
+          date || new Date().toISOString().slice(0, 10),
+          -finalAmount,
+          `ثبت برگشت از فروش شماره ${invoiceNumber}`
+        );
+
+        // If we repaid them cash/bank (amountPaid > 0), log debit as refund paid
+        if (parseFloat(amountPaid || 0) > 0) {
+          db.prepare(`
+            INSERT INTO person_financial_ledger (person_id, date, type, amount, description)
+            VALUES (?, ?, 'paid', ?, ?)
+          `).run(
+            customer_id,
+            date || new Date().toISOString().slice(0, 10),
+            parseFloat(amountPaid || 0),
+            `پرداخت نقدی/بانکی بابت برگشت از فروش شماره ${invoiceNumber}`
+          );
+        }
+      } else {
+        // Decrease what we owe supplier (debit supplier, positive amount)
+        db.prepare(`
+          INSERT INTO person_financial_ledger (person_id, date, type, amount, description)
+          VALUES (?, ?, 'purchase_return', ?, ?)
+        `).run(
+          customer_id,
+          date || new Date().toISOString().slice(0, 10),
+          finalAmount,
+          `ثبت برگشت از خرید شماره ${invoiceNumber}`
+        );
+
+        // If supplier repaid us cash/bank (amountPaid > 0), log credit as refund received
+        if (parseFloat(amountPaid || 0) > 0) {
+          db.prepare(`
+            INSERT INTO person_financial_ledger (person_id, date, type, amount, description)
+            VALUES (?, ?, 'received', ?, ?)
+          `).run(
+            customer_id,
+            date || new Date().toISOString().slice(0, 10),
+            -parseFloat(amountPaid || 0),
+            `دریافت نقدی/بانکی بابت برگشت از خرید شماره ${invoiceNumber}`
+          );
+        }
+      }
+    }
+
+    db.prepare('COMMIT').run();
+    return { success: true, id: returnId, invoice_number: invoiceNumber };
+  } catch (e) {
+    if (db.inTransaction) db.prepare('ROLLBACK').run();
+    console.error('Error saving return invoice:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+// Debtors and Creditors Handlers
+ipcMain.handle('getDebtorsCreditorsSummary', () => {
+  if (!db) return [];
+  try {
+    const persons = db.prepare(`
+      SELECT p.*
+      FROM persons p
+      ORDER BY p.last_name ASC, p.first_name ASC
+    `).all();
+
+    const result = [];
+    for (const person of persons) {
+      // 1. Calculate Unpaid/Partial Invoices sum (sales are positive debts, purchases are negative debts)
+      const invoiceDebts = db.prepare(`
+        SELECT SUM(CASE WHEN type = 'خرید' THEN -final_amount ELSE final_amount END) as total FROM invoices 
+        WHERE customer_id = ? AND status != 'پرداخت شده'
+      `).get(person.id).total || 0;
+
+      // 2. Calculate Manual Financial Ledger sum
+      const manualBalance = db.prepare(`
+        SELECT SUM(amount) as total FROM person_financial_ledger 
+        WHERE person_id = ?
+      `).get(person.id).total || 0;
+
+      const netFinancialBalance = invoiceDebts + manualBalance;
+
+      // 3. Calculate Goods Deposit Balances and Valuation
+      const goodsBalances = db.prepare(`
+        SELECT gl.product_id, SUM(gl.quantity_change) as balance,
+          SUM(gl.quantity_change * gl.unit_price_at_transaction) as old_value,
+          prod.name as product_name, prod.price as current_price, prod.unit as product_unit
+        FROM person_goods_ledger gl
+        JOIN products prod ON gl.product_id = prod.id
+        WHERE gl.person_id = ?
+        GROUP BY gl.product_id
+        HAVING balance != 0
+      `).all(person.id);
+
+      let totalGoodsOldVal = 0;
+      let totalGoodsNewVal = 0;
+      let activeDepositsCount = 0;
+
+      for (const gb of goodsBalances) {
+        if (gb.balance > 0) {
+          totalGoodsOldVal += gb.old_value;
+          totalGoodsNewVal += gb.balance * gb.current_price;
+          activeDepositsCount += gb.balance;
+        }
+      }
+
+      // 4. Calculate Quotas status
+      const quotas = db.prepare(`
+        SELECT pq.*, prod.name as product_name, prod.unit as product_unit
+        FROM person_quotas pq
+        JOIN products prod ON pq.product_id = prod.id
+        WHERE pq.person_id = ?
+      `).all(person.id);
+
+      result.push({
+        ...person,
+        financial_balance: netFinancialBalance,
+        goods_balances: goodsBalances,
+        total_goods_old_val: totalGoodsOldVal,
+        total_goods_new_val: totalGoodsNewVal,
+        active_deposits_count: activeDepositsCount,
+        quotas_count: quotas.length,
+        has_active_items: activeDepositsCount > 0 || quotas.length > 0 || Math.abs(netFinancialBalance) > 100
+      });
+    }
+
+    return result;
+  } catch (e) {
+    console.error('Error fetching debtors/creditors summary:', e);
+    return [];
+  }
+});
+
+ipcMain.handle('getPersonQuotas', (event, personId) => {
+  if (!db) return [];
+  try {
+    return db.prepare(`
+      SELECT pq.*, p.name as product_name, p.unit as product_unit, p.price as current_price
+      FROM person_quotas pq
+      JOIN products p ON pq.product_id = p.id
+      WHERE pq.person_id = ?
+      ORDER BY pq.id DESC
+    `).all(personId);
+  } catch (e) {
+    console.error('Error fetching person quotas:', e);
+    return [];
+  }
+});
+
+ipcMain.handle('savePersonQuota', (event, data) => {
+  if (!db) throw new Error("دیتابیس متصل نیست");
+  try {
+    const { id, person_id, product_id, quota_quantity, period_name, description } = data;
+    if (id) {
+      db.prepare(`
+        UPDATE person_quotas
+        SET product_id = ?, quota_quantity = ?, period_name = ?, description = ?
+        WHERE id = ?
+      `).run(product_id, quota_quantity, period_name, description, id);
+      return { success: true, id };
+    } else {
+      const info = db.prepare(`
+        INSERT INTO person_quotas (person_id, product_id, quota_quantity, period_name, description)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(person_id, product_id, quota_quantity, period_name, description);
+      return { success: true, id: info.lastInsertRowid };
+    }
+  } catch (e) {
+    console.error('Error saving person quota:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('deletePersonQuota', (event, id) => {
+  if (!db) throw new Error("دیتابیس متصل نیست");
+  try {
+    db.prepare('DELETE FROM person_quotas WHERE id = ?').run(id);
+    return { success: true };
+  } catch (e) {
+    console.error('Error deleting person quota:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('getPersonGoodsTransactions', (event, personId) => {
+  if (!db) return [];
+  try {
+    return db.prepare(`
+      SELECT gl.*, p.name as product_name, p.unit as product_unit, p.price as current_price
+      FROM person_goods_ledger gl
+      JOIN products p ON gl.product_id = p.id
+      WHERE gl.person_id = ?
+      ORDER BY gl.id DESC
+    `).all(personId);
+  } catch (e) {
+    console.error('Error fetching person goods ledger:', e);
+    return [];
+  }
+});
+
+ipcMain.handle('addPersonGoodsTransaction', (event, data) => {
+  if (!db) throw new Error("دیتابیس متصل نیست");
+  try {
+    const { person_id, product_id, quantity_change, type, unit_price_at_transaction, date, description } = data;
+    const info = db.prepare(`
+      INSERT INTO person_goods_ledger (person_id, product_id, quantity_change, type, unit_price_at_transaction, date, description)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(person_id, product_id, quantity_change, type, unit_price_at_transaction, date, description);
+    return { success: true, id: info.lastInsertRowid };
+  } catch (e) {
+    console.error('Error adding goods transaction:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('deletePersonGoodsTransaction', (event, id) => {
+  if (!db) throw new Error("دیتابیس متصل نیست");
+  try {
+    db.prepare('DELETE FROM person_goods_ledger WHERE id = ?').run(id);
+    return { success: true };
+  } catch (e) {
+    console.error('Error deleting goods transaction:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('getPersonFinancialTransactions', (event, personId) => {
+  if (!db) return [];
+  try {
+    return db.prepare(`
+      SELECT * FROM person_financial_ledger
+      WHERE person_id = ?
+      ORDER BY id DESC
+    `).all(personId);
+  } catch (e) {
+    console.error('Error fetching person financial transactions:', e);
+    return [];
+  }
+});
+
+ipcMain.handle('addPersonFinancialTransaction', (event, data) => {
+  if (!db) throw new Error("دیتابیس متصل نیست");
+  try {
+    const { person_id, date, type, amount, description } = data;
+    const info = db.prepare(`
+      INSERT INTO person_financial_ledger (person_id, date, type, amount, description)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(person_id, date, type, amount, description);
+    return { success: true, id: info.lastInsertRowid };
+  } catch (e) {
+    console.error('Error adding financial transaction:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('deletePersonFinancialTransaction', (event, id) => {
+  if (!db) throw new Error("دیتابیس متصل نیست");
+  try {
+    db.prepare('DELETE FROM person_financial_ledger WHERE id = ?').run(id);
+    return { success: true };
+  } catch (e) {
+    console.error('Error deleting financial transaction:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('getPersonNotes', (event, personId) => {
+  if (!db) return [];
+  try {
+    return db.prepare(`
+      SELECT * FROM person_notes
+      WHERE person_id = ?
+      ORDER BY id DESC
+    `).all(personId);
+  } catch (e) {
+    console.error('Error fetching person notes:', e);
+    return [];
+  }
+});
+
+ipcMain.handle('addPersonNote', (event, data) => {
+  if (!db) throw new Error("دیتابیس متصل نیست");
+  try {
+    const { person_id, description, followup_date, reminder } = data;
+    const info = db.prepare(`
+      INSERT INTO person_notes (person_id, description, followup_date, reminder)
+      VALUES (?, ?, ?, ?)
+    `).run(person_id, description, followup_date, reminder);
+    return { success: true, id: info.lastInsertRowid };
+  } catch (e) {
+    console.error('Error adding person note:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('deletePersonNote', (event, id) => {
+  if (!db) throw new Error("دیتابیس متصل نیست");
+  try {
+    db.prepare('DELETE FROM person_notes WHERE id = ?').run(id);
+    return { success: true };
+  } catch (e) {
+    console.error('Error deleting person note:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+// Cash and Bank APIs
+ipcMain.handle('getCashRegisters', () => {
+  if (!db) return [];
+  try {
+    return db.prepare("SELECT * FROM cash_registers ORDER BY id ASC").all();
+  } catch (e) {
+    console.error('Error in getCashRegisters:', e);
+    return [];
+  }
+});
+
+ipcMain.handle('getBankAccounts', () => {
+  if (!db) return [];
+  try {
+    return db.prepare("SELECT * FROM bank_accounts ORDER BY id ASC").all();
+  } catch (e) {
+    console.error('Error in getBankAccounts:', e);
+    return [];
+  }
+});
+
+ipcMain.handle('addCashRegister', (event, name) => {
+  if (!db) throw new Error("دیتابیس متصل نیست");
+  try {
+    const info = db.prepare("INSERT INTO cash_registers (name, balance, is_default) VALUES (?, ?, ?)").run(name, 0, 0);
+    return { success: true, id: info.lastInsertRowid };
+  } catch (e) {
+    console.error('Error in addCashRegister:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('addBankAccount', (event, data) => {
+  if (!db) throw new Error("دیتابیس متصل نیست");
+  try {
+    const { bank_name, account_number, card_number } = data;
+    const info = db.prepare("INSERT INTO bank_accounts (bank_name, account_number, card_number, balance, is_default) VALUES (?, ?, ?, ?, ?)").run(bank_name, account_number, card_number, 0, 0);
+    return { success: true, id: info.lastInsertRowid };
+  } catch (e) {
+    console.error('Error in addBankAccount:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('getTreasuryTransactions', () => {
+  if (!db) return [];
+  try {
+    return db.prepare(`
+      SELECT t.*, 
+             CASE WHEN t.source_type = 'cash' THEN c.name ELSE b.bank_name || ' - ' || b.account_number END as source_name,
+             CASE WHEN t.destination_type = 'cash' THEN dc.name 
+                  WHEN t.destination_type = 'bank' THEN dbk.bank_name || ' - ' || dbk.account_number
+                  WHEN t.destination_type = 'person' THEN p.first_name || ' ' || p.last_name
+                  ELSE NULL END as destination_name
+      FROM treasury_transactions t
+      LEFT JOIN cash_registers c ON t.source_type = 'cash' AND t.source_id = c.id
+      LEFT JOIN bank_accounts b ON t.source_type = 'bank' AND t.source_id = b.id
+      LEFT JOIN cash_registers dc ON t.destination_type = 'cash' AND t.destination_id = dc.id
+      LEFT JOIN bank_accounts dbk ON t.destination_type = 'bank' AND t.destination_id = dbk.id
+      LEFT JOIN persons p ON t.destination_type = 'person' AND t.destination_id = p.id
+      ORDER BY t.id DESC
+    `).all();
+  } catch (e) {
+    console.error('Error in getTreasuryTransactions:', e);
+    return [];
+  }
+});
+
+ipcMain.handle('addTreasuryTransaction', (event, data) => {
+  if (!db) throw new Error("دیتابیس متصل نیست");
+  
+  const { date, source_type, source_id, type, amount, destination_type, destination_id, description } = data;
+  
+  try {
+    db.prepare('BEGIN TRANSACTION').run();
+    
+    // 1. Update source balance
+    if (type === 'deposit') {
+      if (source_type === 'cash') {
+        db.prepare("UPDATE cash_registers SET balance = balance + ? WHERE id = ?").run(amount, source_id);
+      } else if (source_type === 'bank') {
+        db.prepare("UPDATE bank_accounts SET balance = balance + ? WHERE id = ?").run(amount, source_id);
+      }
+    } else if (type === 'withdrawal' || type === 'transfer') {
+      if (source_type === 'cash') {
+        db.prepare("UPDATE cash_registers SET balance = balance - ? WHERE id = ?").run(amount, source_id);
+      } else if (source_type === 'bank') {
+        db.prepare("UPDATE bank_accounts SET balance = balance - ? WHERE id = ?").run(amount, source_id);
+      }
+    }
+    
+    // 2. Update destination balance if it's a transfer
+    if (type === 'transfer') {
+      if (destination_type === 'cash') {
+        db.prepare("UPDATE cash_registers SET balance = balance + ? WHERE id = ?").run(amount, destination_id);
+      } else if (destination_type === 'bank') {
+        db.prepare("UPDATE bank_accounts SET balance = balance + ? WHERE id = ?").run(amount, destination_id);
+      }
+    }
+    
+    // 3. Link to person's financial ledger if applicable
+    if (destination_type === 'person' && destination_id) {
+      let personLedgerType = type === 'deposit' ? 'received' : 'paid';
+      let personLedgerAmount = type === 'deposit' ? -amount : amount;
+      
+      db.prepare(`
+        INSERT INTO person_financial_ledger (person_id, date, type, amount, description)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(destination_id, date, personLedgerType, personLedgerAmount, description || (type === 'deposit' ? 'دریافت نقدی/بانکی' : 'پرداخت نقدی/بانکی'));
+    }
+    
+    // 4. Save the treasury transaction record
+    const info = db.prepare(`
+      INSERT INTO treasury_transactions (date, source_type, source_id, type, amount, destination_type, destination_id, description)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(date, source_type, source_id, type, amount, destination_type || null, destination_id || null, description || '');
+    
+    db.prepare('COMMIT').run();
+    return { success: true, id: info.lastInsertRowid };
+  } catch (e) {
+    if (db.inTransaction) db.prepare('ROLLBACK').run();
+    console.error('Error adding treasury transaction:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('deleteTreasuryTransaction', (event, id) => {
+  if (!db) throw new Error("دیتابیس متصل نیست");
+  try {
+    db.prepare('BEGIN TRANSACTION').run();
+    
+    const tx = db.prepare("SELECT * FROM treasury_transactions WHERE id = ?").get(id);
+    if (!tx) {
+      throw new Error("تراکنش یافت نشد");
+    }
+    
+    // Reverse source balance
+    if (tx.type === 'deposit') {
+      if (tx.source_type === 'cash') {
+        db.prepare("UPDATE cash_registers SET balance = balance - ? WHERE id = ?").run(tx.amount, tx.source_id);
+      } else if (tx.source_type === 'bank') {
+        db.prepare("UPDATE bank_accounts SET balance = balance - ? WHERE id = ?").run(tx.amount, tx.source_id);
+      }
+    } else if (tx.type === 'withdrawal' || tx.type === 'transfer') {
+      if (tx.source_type === 'cash') {
+        db.prepare("UPDATE cash_registers SET balance = balance + ? WHERE id = ?").run(tx.amount, tx.source_id);
+      } else if (tx.source_type === 'bank') {
+        db.prepare("UPDATE bank_accounts SET balance = balance + ? WHERE id = ?").run(tx.amount, tx.source_id);
+      }
+    }
+    
+    // Reverse destination balance if transfer
+    if (tx.type === 'transfer') {
+      if (tx.destination_type === 'cash') {
+        db.prepare("UPDATE cash_registers SET balance = balance - ? WHERE id = ?").run(tx.amount, tx.destination_id);
+      } else if (tx.destination_type === 'bank') {
+        db.prepare("UPDATE bank_accounts SET balance = balance - ? WHERE id = ?").run(tx.amount, tx.destination_id);
+      }
+    }
+    
+    // Reverse person's financial ledger if applicable
+    if (tx.destination_type === 'person' && tx.destination_id) {
+      let personLedgerAmount = tx.type === 'deposit' ? -tx.amount : tx.amount;
+      db.prepare(`
+        DELETE FROM person_financial_ledger 
+        WHERE person_id = ? AND date = ? AND amount = ?
+      `).run(tx.destination_id, tx.date, personLedgerAmount);
+    }
+    
+    // Delete transaction
+    db.prepare("DELETE FROM treasury_transactions WHERE id = ?").run(id);
+    
+    db.prepare('COMMIT').run();
+    return { success: true };
+  } catch (e) {
+    if (db.inTransaction) db.prepare('ROLLBACK').run();
+    console.error('Error deleting treasury transaction:', e);
     return { success: false, error: e.message };
   }
 });

@@ -52,7 +52,9 @@ export default function PersonNew() {
     national_id: '',
     description: '',
     tax_registered: false,
-    avatar: ''
+    avatar: '',
+    initial_balance: 0,
+    initial_balance_type: 'debit' // debit = بدهکار, credit = بستانکار
   });
 
   const handleChange = (e: any) => {
@@ -64,12 +66,26 @@ export default function PersonNew() {
   };
 
   const handleRoleToggle = (role: string) => {
-    setFormData(prev => ({
-      ...prev,
-      roles: prev.roles.includes(role) 
+    setFormData(prev => {
+      const updatedRoles = prev.roles.includes(role) 
         ? prev.roles.filter(r => r !== role)
-        : [...prev.roles, role]
-    }));
+        : [...prev.roles, role];
+      
+      let category = prev.category || 'سایر';
+      if (role === 'مشتری' && updatedRoles.includes('مشتری')) {
+        category = 'مشتری';
+      } else if (role === 'تامین‌کننده' && updatedRoles.includes('تامین‌کننده')) {
+        category = 'تامین‌کننده';
+      } else if (role === 'فروشنده' && updatedRoles.includes('فروشنده')) {
+        category = 'فروشنده';
+      }
+      
+      return {
+        ...prev,
+        roles: updatedRoles,
+        category
+      };
+    });
   };
 
   const handleSave = async () => {
@@ -78,12 +94,45 @@ export default function PersonNew() {
       return;
     }
 
-    if (formData.type === 'حقیقی' && !formData.first_name && !formData.last_name) {
-      MySwal.fire('نقص اطلاعات', 'وارد کردن نام و نام خانوادگی برای شخص حقیقی الزامی است.', 'warning');
+    if (!formData.type) {
+      MySwal.fire('نقص اطلاعات', 'انتخاب نوع شخص (حقیقی یا حقوقی) الزامی است.', 'warning');
       return;
     }
-    if (formData.type === 'حقوقی' && !formData.title) {
-      MySwal.fire('نقص اطلاعات', 'وارد کردن نام شرکت (عنوان) الزامی است.', 'warning');
+
+    if (formData.type === 'حقیقی') {
+      if (!formData.first_name || !formData.first_name.trim()) {
+        MySwal.fire('نقص اطلاعات', 'وارد کردن نام برای شخص حقیقی الزامی است.', 'warning');
+        return;
+      }
+      if (!formData.last_name || !formData.last_name.trim()) {
+        MySwal.fire('نقص اطلاعات', 'وارد کردن نام خانوادگی برای شخص حقیقی الزامی است.', 'warning');
+        return;
+      }
+      if (formData.national_id && !/^\d{10}$/.test(formData.national_id)) {
+        MySwal.fire('قالب نادرست', 'کد ملی باید دقیقا ۱۰ رقم عددی باشد.', 'warning');
+        return;
+      }
+    } else if (formData.type === 'حقوقی') {
+      if (!formData.title || !formData.title.trim()) {
+        MySwal.fire('نقص اطلاعات', 'وارد کردن نام شرکت یا سازمان (عنوان) الزامی است.', 'warning');
+        return;
+      }
+      if (formData.national_id && !/^\d{11}$/.test(formData.national_id)) {
+        MySwal.fire('قالب نادرست', 'شناسه ملی شرکت باید دقیقا ۱۱ رقم عددی باشد.', 'warning');
+        return;
+      }
+    } else {
+      MySwal.fire('نقص اطلاعات', 'نوع شخص انتخاب شده معتبر نیست.', 'warning');
+      return;
+    }
+
+    if (formData.phone1 && !/^09\d{9}$/.test(formData.phone1)) {
+      MySwal.fire('قالب نادرست', 'شماره تلفن همراه معتبر نیست. شماره همراه باید با 09 شروع شده و ۱۱ رقم باشد. مثال: 09123456789', 'warning');
+      return;
+    }
+
+    if (formData.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
+      MySwal.fire('قالب نادرست', 'قالب آدرس ایمیل وارد شده معتبر نیست. مثال: info@example.com', 'warning');
       return;
     }
 
@@ -91,6 +140,21 @@ export default function PersonNew() {
     try {
       const res = await window.electronAPI.addPerson(formData);
       if (res.success) {
+        // Add initial balance transaction if specified
+        if (formData.initial_balance && Number(formData.initial_balance) > 0) {
+          const balAmount = Number(formData.initial_balance);
+          const finalBal = formData.initial_balance_type === 'credit' ? -balAmount : balAmount;
+          if (window.electronAPI.addPersonFinancialTransaction) {
+            await window.electronAPI.addPersonFinancialTransaction({
+              person_id: res.id,
+              date: formData.membership_date || new Date().toLocaleDateString('fa-IR'),
+              type: 'adjustment',
+              amount: finalBal,
+              description: 'مانده اولیه ثبت شده هنگام ایجاد پرونده شخص'
+            });
+          }
+        }
+
         MySwal.fire({
           icon: 'success',
           title: 'شخص با موفقیت ثبت شد!',
@@ -98,7 +162,7 @@ export default function PersonNew() {
           confirmButtonColor: '#4f46e5'
         });
         // reset form if needed
-        setFormData(prev => ({ ...prev, first_name: '', last_name: '', title: '', avatar: '' }));
+        setFormData(prev => ({ ...prev, first_name: '', last_name: '', title: '', avatar: '', initial_balance: 0 }));
       }
     } catch(e: any) {
       MySwal.fire('خطا', e.message || 'مشکل در ذخیره اطلاعات در دیتابیس', 'error');
@@ -201,7 +265,12 @@ export default function PersonNew() {
 
              <div className="space-y-4 relative z-10">
                 <label className="flex items-center justify-between p-3 bg-slate-50/50 dark:bg-slate-800/30 rounded-2xl border border-slate-100 dark:border-slate-700/50 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
-                  <span className="text-sm font-medium text-slate-700 dark:text-slate-300">کد حسابداری خودکار</span>
+                  <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                    کد حسابداری خودکار
+                    <span className="block text-[10px] text-slate-400 dark:text-slate-500 font-normal mt-0.5">
+                      کد حسابداری: شناسه منحصربه‌فرد مالی این شخص برای سیستم حسابداری
+                    </span>
+                  </span>
                   <div className="relative">
                     <input type="checkbox" name="auto_accounting_code" checked={formData.auto_accounting_code} onChange={handleChange} className="sr-only peer" />
                     <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-slate-600 peer-checked:bg-indigo-600"></div>
@@ -218,6 +287,12 @@ export default function PersonNew() {
              <div className="mt-8">
                <h3 className="text-sm font-bold text-slate-400 dark:text-slate-500 mb-4 uppercase tracking-wider flex items-center gap-2">
                  <User className="w-4 h-4" />
+               </h3>
+               <p className="text-[10px] text-slate-450 dark:text-slate-500 mb-3 leading-relaxed font-normal">
+                 نوع شخص: حقیقی (شخص عادی با کد ملی) یا حقوقی (شرکت یا سازمان با شناسه ملی)
+               </p>
+               <h3 className="hidden">
+                 <span className="hidden">نوع شخص</span>
                  نوع شخص
                </h3>
                <div className="flex gap-2 p-1 bg-slate-100 dark:bg-slate-800/50 rounded-2xl">
@@ -272,26 +347,44 @@ export default function PersonNew() {
                 <div>
                   <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">نام</label>
                   <input type="text" name="first_name" value={formData.first_name} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none  dark:text-slate-200 transition-all font-medium" />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>نام:</strong> نام کوچک شخص حقیقی که در فاکتورها، گزارش‌ها و مکاتبات استفاده می‌شود (اجباری).
+                  </p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">نام خانوادگی</label>
                   <input type="text" name="last_name" value={formData.last_name} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none  dark:text-slate-200 transition-all font-medium" />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>نام خانوادگی:</strong> نام خانوادگی شخص حقیقی برای شناسایی دقیق و رسمی در دفتر کل (اجباری).
+                  </p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">کد ملی</label>
                   <input type="text" name="national_id" value={formData.national_id} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none dir-ltr text-right dark:text-slate-200 transition-all font-mono" placeholder="----------" />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>کد ملی:</strong> شماره ۱۰ رقمی کد ملی جهت احراز هویت مالی، ثبت قراردادها و صورت‌حساب‌های رسمی ممیزی.
+                  </p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">نام مستعار</label>
                   <input type="text" name="nickname" value={formData.nickname} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none  dark:text-slate-200 transition-all" />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>نام مستعار:</strong> عنوان یا نام معروفیتی شخص در بازار کار جهت جستجوی راحت‌تر در میان مشتریان.
+                  </p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">تاریخ تولد</label>
                   <input type="text" name="birth_date" value={formData.birth_date} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none dir-ltr text-right dark:text-slate-200 transition-all" placeholder="مثال: ۱۳۷۰/۰۵/۱۲" />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>تاریخ تولد:</strong> به منظور ارسال پیام‌های تبریک، ارائه کدهای تخفیف دوره‌ای و باشگاه وفاداری مشتریان.
+                  </p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">شناسه پرسنلی / عضویت</label>
                   <input type="text" name="personal_code" value={formData.personal_code} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none dir-ltr text-right dark:text-slate-200 transition-all font-mono" />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>شناسه پرسنلی:</strong> کد اختصاصی تخصیص‌یافته به شخص در چارت سازمانی یا شناسه اشتراک وی در سیستم شما.
+                  </p>
                 </div>
               </div>
             ) : (
@@ -299,22 +392,37 @@ export default function PersonNew() {
                 <div className="md:col-span-2">
                   <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">نام شرکت / سازمان</label>
                   <input type="text" name="title" value={formData.title} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none  dark:text-slate-200 transition-all font-medium" />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>نام شرکت / سازمان:</strong> نام رسمی، تجاری یا ثبتی شرکت یا موسسه حقوقی برای درج در فاکتورها (اجباری).
+                  </p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">شناسه ملی</label>
                   <input type="text" name="national_id" value={formData.national_id} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none dir-ltr text-right dark:text-slate-200 transition-all font-mono" />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>شناسه ملی:</strong> شناسه ۱۱ رقمی حقوقی صادرشده توسط سازمان ثبت اسناد و املاک کشور جهت رد کردن گزارشات فصلی.
+                  </p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">کد اقتصادی</label>
                   <input type="text" name="economic_code" value={formData.economic_code} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none dir-ltr text-right dark:text-slate-200 transition-all font-mono" />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>کد اقتصادی:</strong> شماره ۱۲ رقمی ثبت‌نام در سازمان امور مالیاتی کل کشور جهت ارائه معاملات و ارزش افزوده.
+                  </p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">شماره ثبت</label>
                   <input type="text" name="registration_number" value={formData.registration_number} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none dir-ltr text-right dark:text-slate-200 transition-all font-mono" />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>شماره ثبت:</strong> شماره منحصربه‌فرد ثبت شرکت در مرجع ثبت شرکت‌ها که هویت قانونی آن را احراز می‌کند.
+                  </p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">تاریخ تاسیس / آغاز همکاری</label>
-                  <input type="text" name="membership_date" value={formData.membership_date} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none dir-ltr text-right dark:text-slate-200 transition-all" placeholder="مثال: ۱۳۸۰/۰۱/۰۱" />
+                  <input type="text" name="membership_date" value={formData.membership_date} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none dir-ltr text-right dark:text-slate-200 transition-all" placeholder="مثال: ۱۳۸۰/۰۱/۰1" />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>تاریخ تاسیس:</strong> تاریخ ثبت رسمی شرکت یا شروع مراودات تجاری شما با این شخصیت حقوقی.
+                  </p>
                 </div>
               </div>
             )}
@@ -331,18 +439,30 @@ export default function PersonNew() {
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">تلفن همراه</label>
                   <input type="text" name="phone1" value={formData.phone1} onChange={handleChange} className="w-full px-4 py-2 border-b-2 border-slate-200 dark:border-slate-700 bg-transparent focus:border-indigo-500 outline-none dir-ltr text-right dark:text-slate-200 transition-colors" placeholder="09xxxxxxxxx" />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>تلفن همراه:</strong> شماره موبایل فعال جهت تماس اضطراری، اطلاع‌رسانی پیامکی فاکتورها و وضعیت مالی (فرمت: 09123456789).
+                  </p>
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">تلفن ثابت</label>
                   <input type="text" name="phone2" value={formData.phone2} onChange={handleChange} className="w-full px-4 py-2 border-b-2 border-slate-200 dark:border-slate-700 bg-transparent focus:border-indigo-500 outline-none dir-ltr text-right dark:text-slate-200 transition-colors" placeholder="021xxxxxxxx" />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>تلفن ثابت:</strong> شماره تلفن ثابت دفتر کار یا منزل به همراه کد استان جهت مکاتبات ثابت و احراز موقعیت.
+                  </p>
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">ایمیل</label>
                   <input type="email" name="email" value={formData.email} onChange={handleChange} className="w-full px-4 py-2 border-b-2 border-slate-200 dark:border-slate-700 bg-transparent focus:border-indigo-500 outline-none dir-ltr text-right dark:text-slate-200 transition-colors" placeholder="example@mail.com" />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>ایمیل:</strong> آدرس ایمیل معتبر جهت ارسال پیش‌فاکتورها، صورت‌حساب‌ها و بروشورهای دیجیتال به صورت خودکار.
+                  </p>
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">آدرس وب‌سایت</label>
                   <input type="url" name="website" value={formData.website} onChange={handleChange} className="w-full px-4 py-2 border-b-2 border-slate-200 dark:border-slate-700 bg-transparent focus:border-indigo-500 outline-none dir-ltr text-right dark:text-slate-200 transition-colors" placeholder="https://" />
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>آدرس وب‌سایت:</strong> لینک وب‌سایت شخصی یا شرکتی جهت آشنایی بیشتر با حوزه فعالیت و خدمات شخص.
+                  </p>
                 </div>
               </div>
             </div>
@@ -358,15 +478,24 @@ export default function PersonNew() {
                   <div className="flex-1">
                     <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">استان / شهر</label>
                     <input type="text" name="city" value={formData.city} onChange={handleChange} className="w-full px-4 py-2 border-b-2 border-slate-200 dark:border-slate-700 bg-transparent focus:border-indigo-500 outline-none dark:text-slate-200 transition-colors" />
+                    <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                      <strong>استان / شهر:</strong> موقعیت جغرافیایی استان و شهر سکونت جهت محاسبات توزیع و حمل بار.
+                    </p>
                   </div>
                   <div className="w-1/3">
                     <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">کد پستی</label>
                     <input type="text" name="postal_code" value={formData.postal_code} onChange={handleChange} className="w-full px-4 py-2 border-b-2 border-slate-200 dark:border-slate-700 bg-transparent focus:border-indigo-500 outline-none dir-ltr text-right dark:text-slate-200 transition-colors font-mono" />
+                    <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                      <strong>کد پستی:</strong> کد پستی ۱۰ رقمی تایید شده ملک جهت ارسال فیزیکی مدارک، هدایا و سفارشات.
+                    </p>
                   </div>
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">آدرس دقیق</label>
                   <textarea name="address" value={formData.address} onChange={handleChange} rows={3} className="w-full p-4 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none dark:text-slate-200 transition-colors resize-none"></textarea>
+                  <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                    <strong>آدرس دقیق:</strong> نشانی فیزیکی دقیق دفتر یا منزل شخص جهت قید در فاکتور چاپی و حمل مطمئن کالا.
+                  </p>
                 </div>
               </div>
             </div>
@@ -382,6 +511,9 @@ export default function PersonNew() {
               <div>
                 <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">نام بانک</label>
                 <input type="text" name="bank_name" value={formData.bank_name} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none dark:text-slate-200 transition-all" />
+                <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                  <strong>نام بانک:</strong> نام بانک دارنده حساب شخص جهت سهولت در رهگیری حواله‌ها و تطبیق سندهای دریافتنی.
+                </p>
               </div>
               <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">شماره شبا (IBAN)</label>
@@ -389,18 +521,47 @@ export default function PersonNew() {
                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold bg-slate-100 dark:bg-slate-800 px-2 rounded">IR</span>
                    <input type="text" name="iban" value={formData.iban} onChange={handleChange} className="w-full pl-16 pr-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none dir-ltr text-left font-mono tracking-widest dark:text-slate-200 transition-all" placeholder="0000 0000 0000 0000 0000 0000" />
                 </div>
+                <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                  <strong>شماره شبا:</strong> شماره شناسه حساب بانکی ایران (۲۴ رقم بدون نیاز به نوشتن IR) جهت واریز‌های الکترونیک ساتنا و پایا بدون ریسک برگشت پول.
+                </p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">شماره کارت</label>
                 <input type="text" name="bank_card" value={formData.bank_card} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none dir-ltr text-right font-mono dark:text-slate-200 transition-all" />
+                <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                  <strong>شماره کارت:</strong> شماره کارت عابربانک ۱۶ رقمی متصل به حساب جهت تسویه‌حساب‌های فوری کارت‌به‌کارت.
+                </p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">شماره حساب</label>
                 <input type="text" name="bank_account" value={formData.bank_account} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none dir-ltr text-right font-mono dark:text-slate-200 transition-all" />
+                <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1 leading-relaxed">
+                  <strong>شماره حساب:</strong> شماره حساب بانکی مستقیم جهت واریز وجه با مراجعه حضوری به شعب یا اینترنت‌بانک.
+                </p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">سقف اعتبار (ریال)</label>
                 <input type="number" name="credit_limit" value={formData.credit_limit} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none dir-ltr text-right font-mono dark:text-slate-200 transition-all" />
+                <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1.5 leading-relaxed">
+                  <strong>سقف اعتبار:</strong> حداکثر مبلغ مجاز فروش نسیه یا حساب دفتری باز این شخص؛ فراتر از این مقدار سیستم هشدار خواهد داد.
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">مانده اولیه (ریال)</label>
+                <input type="number" name="initial_balance" value={formData.initial_balance} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none dir-ltr text-right font-mono dark:text-slate-200 transition-all" />
+                <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1.5 leading-relaxed">
+                  <strong>مانده اولیه:</strong> مقدار خالص دارایی یا بدهکاری شخص در زمان شروع استقرار سیستم حسابداری جدید.
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-600 dark:text-slate-400 mb-2">نوع مانده اولیه</label>
+                <select name="initial_balance_type" value={formData.initial_balance_type} onChange={handleChange} className="w-full px-5 py-3 border border-slate-200 dark:border-slate-700 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30 focus:ring-2 focus:ring-indigo-500 outline-none text-xs dark:text-slate-200 transition-all font-bold">
+                  <option value="debit">بدهکار (از قبل به ما بدهکار است)</option>
+                  <option value="credit">بستانکار (از قبل طلبکار است)</option>
+                </select>
+                <p className="text-[10px] text-slate-450 dark:text-slate-500 mt-1.5 leading-relaxed">
+                  <strong>نوع مانده اولیه:</strong> تعیین ماهیت حساب؛ بدهکار یعنی شخص باید به شما پول پرداخت کند، بستانکار یعنی شما به وی بدهکارید.
+                </p>
               </div>
             </div>
 

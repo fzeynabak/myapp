@@ -308,7 +308,7 @@ export default function ProductCategories() {
   };
 
   // Recursive Tree Component React Helper
-  const CategoryNode = ({ node, depth = 0 }: { node: any; depth: number }) => {
+  const CategoryNode = ({ node, depth = 0 }: { node: any; depth: number; key?: any }) => {
     const isCollapsed = collapsedNodes[node.id] || false;
     const hasChildren = node.children && node.children.length > 0;
 

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import Swal from 'sweetalert2';
 import withReactContent from 'sweetalert2-react-content';
 import { Database, FolderOpen, Save, Settings } from 'lucide-react';
+import JalaliDatePicker from '../components/JalaliDatePicker';
 
 const MySwal = withReactContent(Swal);
 
@@ -11,6 +12,8 @@ export default function SettingsGeneral() {
   const [accCodeSuffix, setAccCodeSuffix] = useState('-ACC');
   const [currency, setCurrency] = useState<'rial' | 'toman'>('rial');
   const [fiscalYear, setFiscalYear] = useState('۱۴۰۵');
+  const [fiscalYearStart, setFiscalYearStart] = useState('1405/01/01');
+  const [fiscalYearEnd, setFiscalYearEnd] = useState('1405/12/29');
 
   useEffect(() => {
     fetchDbStats();
@@ -31,6 +34,8 @@ export default function SettingsGeneral() {
       if (config.accCodeSuffix) setAccCodeSuffix(config.accCodeSuffix);
       if (config.currency) setCurrency(config.currency);
       if (config.fiscalYear) setFiscalYear(config.fiscalYear);
+      if (config.fiscalYearStart) setFiscalYearStart(config.fiscalYearStart);
+      if (config.fiscalYearEnd) setFiscalYearEnd(config.fiscalYearEnd);
     }
   }
 
@@ -66,7 +71,9 @@ export default function SettingsGeneral() {
         accCodeStart,
         accCodeSuffix,
         currency,
-        fiscalYear
+        fiscalYear,
+        fiscalYearStart,
+        fiscalYearEnd
       });
       MySwal.fire({
         icon: 'success',
@@ -171,14 +178,31 @@ export default function SettingsGeneral() {
               <option value="toman">تومان (Toman)</option>
             </select>
           </div>
-          <div className="w-full">
-            <label className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1 block">سال مالی فعلی:</label>
+          <div className="w-full flex flex-col gap-1">
+            <label className="text-sm font-medium text-slate-700 dark:text-slate-300">سال مالی فعلی (عنوان):</label>
             <input 
               type="text" 
               value={fiscalYear}
               onChange={e => setFiscalYear(e.target.value)}
               className="w-full px-4 py-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none text-slate-800 dark:text-slate-200 text-center font-bold"
               placeholder="مثال: ۱۴۰۵"
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 place-items-start mt-6 w-full">
+          <div className="w-full">
+            <JalaliDatePicker 
+              value={fiscalYearStart} 
+              onChange={setFiscalYearStart} 
+              label="تاریخ شروع سال مالی" 
+            />
+          </div>
+          <div className="w-full">
+            <JalaliDatePicker 
+              value={fiscalYearEnd} 
+              onChange={setFiscalYearEnd} 
+              label="تاریخ پایان سال مالی" 
             />
           </div>
         </div>
